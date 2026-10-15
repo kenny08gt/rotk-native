@@ -10,6 +10,10 @@
 #include "cpu/cpu.h"
 #include "gpu.h"
 #include "hw.h"
+#include "hle.h"
+
+u8* g_fast_vm;   // see fast_cpu.h
+u32 g_fast_vm_base, g_fast_vm_size;
 
 #include "chunks.inc"
 
@@ -362,7 +366,10 @@ static int emu_main(int argc, char** argv) {
     if (!cpu_init(&cpu)) return 1;
     hw_init(disc);
     // SDK virtual memory window (VMInit): back it with flat memory instead of MMU paging from ARAM.
-    cpu_set_flat_vm(calloc(1, 32u << 20), 0x7E000000u, 32u << 20);
+    g_fast_vm = calloc(1, 32u << 20);
+    g_fast_vm_base = 0x7E000000u;
+    g_fast_vm_size = 32u << 20;
+    cpu_set_flat_vm(g_fast_vm, g_fast_vm_base, g_fast_vm_size);
     hw_attach(&cpu);
     u32 n;
     load_dol(&cpu, read_sys(sys, "main.dol", &n));
@@ -408,6 +415,7 @@ static int emu_main(int argc, char** argv) {
     u64 cpu_oc_div = 12, oc_carry = 0;
     if (getenv("ROTK_CPU_CLOCK") && atof(getenv("ROTK_CPU_CLOCK")) >= 0.5)
         cpu_oc_div = (u64)(12 * atof(getenv("ROTK_CPU_CLOCK")) + 0.5);
+    hle_init(chunk_for);
     const char* why = "dispatch limit";
     for (; steps < limit; steps++) {
         // RealMode() rfi's to a physical address; run it from the cached mirror.
@@ -439,14 +447,13 @@ static int emu_main(int argc, char** argv) {
             dump_threads(&cpu);
             threads_at = 0;
         }
-        s64 hle_cycles = hle_cache_range(&cpu);
-        if (hle_cycles) {
-            cycles += (u64)hle_cycles;
-            cpu.timebase += (u64)(hle_cycles > 12 ? hle_cycles / 12 : 1);
-            continue;
-        }
+        // Native stand-ins (cache maintenance, hle.c) charge their guest cycles like a dispatch.
+        s64 used = hle_cache_range(&cpu);
+        if (!used) used = hle_try(&cpu);
+        if (used) goto charge;
         void (*fn)(CPUState*) = chunk_for(pc);
         if (!fn) { why = "pc left recompiled text"; break; }
+        g_hle_skip = pc;   // no native version took this pc: let the generated code run through it
         u32 idx = (pc - 0x80000000u) / 4;
         if (idx < sizeof seen && !seen[idx]) {
             seen[idx] = 1;
@@ -465,13 +472,14 @@ static int emu_main(int argc, char** argv) {
         cpu.downcount = 4096;
         fn(&cpu);
         // Timebase ticks at bus/4 = CPU/12; charge the cycles this dispatch consumed.
-        s64 used = 4096 - cpu.downcount;
+        used = 4096 - cpu.downcount;
         if (used < 1) used = 1;
         if (hist_slot >= 0) {
             hist_ns[hist_slot] += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - fn_t0;
             hist_cyc[hist_slot] += (u64)used;
             hist_slot = -1;
         }
+    charge:
         cycles += (u64)used;
         if (cpu_oc_div == 12) {
             cpu.timebase += (u64)(used > 12 ? used / 12 : 1);
@@ -491,18 +499,21 @@ static int emu_main(int argc, char** argv) {
                 slept += ahead;
             }
             // PERF_LOG=1: every 10 s, how fast the guest could have run in that window without pacing.
-            static double mark_wall, mark_guest, mark_slept;
+            // "cpu" is the same measure against this thread's CPU time, so other load on the Mac
+            // affects it much less.
+            static double mark_wall, mark_guest, mark_slept, mark_cpu;
             static u64 mark_frames;
             static int perf_log = -1;
             if (perf_log < 0) perf_log = getenv("PERF_LOG") != NULL;
             if (perf_log && now - mark_wall >= 10) {
                 double g = cpu.timebase / 40500000.0;
+                double tcpu = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) / 1e9;
                 u64 frames = use_gpu ? gpu_frames_presented() : 0;
-                printf("perf %5.0fs: capacity %.0f%% of real time, %.1f fps\n", now,
+                printf("perf %5.0fs: capacity %.0f%% of real time, cpu %.0f%%, %.1f fps\n", now,
                        100.0 * (g - mark_guest) / (now - mark_wall - (slept - mark_slept)),
-                       (frames - mark_frames) / (now - mark_wall));
+                       100.0 * (g - mark_guest) / (tcpu - mark_cpu), (frames - mark_frames) / (now - mark_wall));
                 fflush(stdout);
-                mark_wall = now, mark_guest = g, mark_slept = slept, mark_frames = frames;
+                mark_wall = now, mark_guest = g, mark_slept = slept, mark_frames = frames, mark_cpu = tcpu;
             }
         }
         if (use_gpu && gpu_should_exit()) { why = "window closed"; break; }
@@ -527,6 +538,7 @@ static int emu_main(int argc, char** argv) {
     u32 off = 0;
     printf("\nstopped: %s after %lld dispatches (%.1fs host, %.2fs guest); pc=%08X (%s+0x%X) lr=%08X exception=0x%X\n",
            why, steps, secs, cpu.timebase / 40500000.0, cpu.pc, sym_for(cpu.pc, &off), off, cpu.lr, cpu.exception);
+    printf("guest cycles: %llu\n", cycles);
     printf("speed: %.0f guest MHz (real Gekko: 486 MHz) = %.1f%% of real time\n",
            cycles / secs / 1e6, 100.0 * (cpu.timebase / 40500000.0) / secs);
     if (throttle)
@@ -585,6 +597,7 @@ static int emu_main(int argc, char** argv) {
     }
     for (u32 i = 0; i < g_fn_trace_count; i++) printf("fn %08X entered %u times\n", g_fn_trace[i], g_fn_trace_hits[i]);
     hw_report(sym_for);
+    hle_report();
     if (use_gpu) {
         printf("frames presented: %llu\n", gpu_frames_presented());
         gpu_shutdown();

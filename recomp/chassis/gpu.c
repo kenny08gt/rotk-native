@@ -257,6 +257,8 @@ int gpu_run(int (*emu)(int, char**), int argc, char** argv) {
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, 64u << 20);   // recompiled guest call chains recurse on the host stack
+    // The game thread is the bottleneck: ask for performance cores even when the Mac is busy.
+    pthread_attr_set_qos_class_np(&attr, QOS_CLASS_USER_INTERACTIVE, 0);
     pthread_t th;
     pthread_create(&th, &attr, emu_thread, &t);
 

@@ -44,7 +44,7 @@ if(ROTK_FAST_CPU)
     target_compile_definitions(rotk_chunks PRIVATE ${ROTK_FAST_DEFS})
 endif()
 
-add_executable(rotk chassis/main.c chassis/hw.c chassis/gpu.c chassis/input.c chassis/ax_hle.cpp chassis/audio.c chassis/exi.c)
+add_executable(rotk chassis/main.c chassis/hw.c chassis/gpu.c chassis/input.c chassis/ax_hle.cpp chassis/audio.c chassis/exi.c chassis/hle.c)
 target_include_directories(rotk PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/out/generated)
 target_compile_options(rotk PRIVATE -Wall -Wextra)
 target_link_libraries(rotk PRIVATE rotk_chunks aurora::core aurora::gx aurora::main aurora::vi)

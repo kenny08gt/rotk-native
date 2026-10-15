@@ -1,6 +1,7 @@
 #include "input.h"
 
 #include <SDL3/SDL.h>
+#include <string.h>
 
 // Keyboard layout (port 0):
 //   arrows      main stick + D-pad      Enter  START
@@ -47,6 +48,11 @@ static u16 autopress(void) {
 static SDL_Gamepad* gamepad(void) {
     if (g_pad && SDL_GamepadConnected(g_pad)) return g_pad;
     g_pad = NULL;
+    // Enumerating devices is slow: look for a newly connected controller at most once a second.
+    static Uint64 last_scan;
+    Uint64 now = SDL_GetTicks();
+    if (last_scan && now - last_scan < 1000) return NULL;
+    last_scan = now;
     int count = 0;
     SDL_JoystickID* ids = SDL_GetGamepads(&count);
     if (ids && count > 0) g_pad = SDL_OpenGamepad(ids[0]);
@@ -58,8 +64,24 @@ static u8 axis8(Sint16 v) { return (u8)(128 + v / 256); }
 
 static u8 dir8(int neg, int pos) { return (u8)(128 + (pos ? 100 : 0) - (neg ? 100 : 0)); }
 
+static void read_pad(u8 out[8]);
+
+// The game reads the SI status and poll registers thousands of times a frame; sample the host
+// devices at most once a millisecond.
 int input_poll(u32 port, u8 out[8]) {
     if (port != 0) return 0;
+    static u8 cached[8];
+    static Uint64 cached_at;
+    Uint64 now = SDL_GetTicksNS();
+    if (!cached_at || now - cached_at >= 1000000) {
+        read_pad(cached);
+        cached_at = now;
+    }
+    memcpy(out, cached, 8);
+    return 1;
+}
+
+static void read_pad(u8 out[8]) {
     const bool* k = SDL_GetKeyboardState(NULL);
     u16 b = 0;
     u8 sx = dir8(k[SDL_SCANCODE_LEFT], k[SDL_SCANCODE_RIGHT]);
@@ -112,5 +134,4 @@ int input_poll(u32 port, u8 out[8]) {
     out[5] = cy;
     out[6] = lt;
     out[7] = rt;
-    return 1;
 }

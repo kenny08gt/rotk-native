@@ -24,11 +24,20 @@ typedef struct __attribute__((packed)) { u64 v; } fast_g64;
 #define FAST_RAM_CACHED 0x80000000u
 #define FAST_RAM_UNCACHED 0xC0000000u
 
+// The SDK's virtual-memory window (0x7E000000+, VMInit), which the chassis backs with flat host
+// memory through cpu_set_flat_vm(); the chassis sets these to the same buffer.
+extern u8* g_fast_vm;
+extern u32 g_fast_vm_base, g_fast_vm_size;
+
 FAST_INLINE u8* fast_ram(CPUState* cpu, u32 addr, u32 size) {
     u32 off = addr - FAST_RAM_CACHED;
     if (off > cpu->ram_size - size) {
         off = addr - FAST_RAM_UNCACHED;
-        if (off > cpu->ram_size - size) return NULL;
+        if (off > cpu->ram_size - size) {
+            off = addr - g_fast_vm_base;
+            if (!g_fast_vm || off > g_fast_vm_size - size) return NULL;
+            return g_fast_vm + off;
+        }
     }
     return cpu->ram + off;
 }

@@ -68,6 +68,7 @@ python3 tools/add_entry_hooks.py ../decomp/symbols_final.tsv out/generated/chunk
 | `NO_AUDIO`, `AUDIO_DUMP=x.wav` | mute; record the game's audio output |
 | `PERF_LOG=1`, `NO_THROTTLE=1` | per-10 s speed capacity and fps; run unpaced |
 | `ROTK_CPU_CLOCK=x` | guest CPU overclock (guest code costs 1/x of its usual time) |
+| `NO_HLE=1`, `HLE_VERIFY=1` | turn off the native versions of hot routines (`chassis/hle.c`); check each call against the generated code and time both |
 | `SYNC_GPU=1`, `NO_GPU=1` | GPU on the CPU thread; no window |
 | `PC_HIST=<s>` | hot functions by host time after `s` seconds |
 | `TRACE_AT=a,b TRACE_ARGS=1 TRACE_N=n` | dispatcher-level call trace with args |
@@ -76,6 +77,14 @@ python3 tools/add_entry_hooks.py ../decomp/symbols_final.tsv out/generated/chunk
 | `DUMP_WORDS=a,b`, `DUMP_MEM=addr,len,path`, `THREADS_AT=<s>` | inspect state |
 | `DSP_LOG`, `DI_LOG`, `SI_LOG`, `EXI_LOG`, `AX_LOG`, `DI_INSTANT` | device logs; instant disc reads |
 | `GPU_STATS`, `AURORA_VERBOSE`, `AURORA_DUMP_DRAWS=n` | renderer statistics and dumps |
+
+`./bench.sh <label>` plays into the first big Helm's Deep fight with scripted presses and prints the fight's
+speed and fps, plus host instructions per guest cycle, which is the comparison to trust when other
+programs load the Mac. Logs go to `runs/bench/`.
+
+Native routines hook into the generated code at the addresses in `chassis/hle_points.txt`
+(`tools/add_hle_points.py`, run by `bootstrap.sh`): loop heads, and the entries and return sites of
+functions called from inside the same chunk.
 
 `tests/fast_cpu_diff.c` checks `fast_cpu.h` against the exact DolRecomp helpers on random inputs:
 `clang -O1 -w -I../third_party/dolrecomp/src tests/fast_cpu_diff.c ../third_party/dolrecomp/build/libdr_cpu.a -o /tmp/fcd && /tmp/fcd`.

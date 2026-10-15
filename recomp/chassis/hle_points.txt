@@ -1,0 +1,17 @@
+# Loop heads where the generated code hands off to a native routine in hle.c.
+800AAE68  fn_800AAC80 lighting loop (normals at r5, colors at r6)
+800AAF84  fn_800AAC80 lighting loop (normals at r4, colors at r5)
+800AAEFC  exit of the first lighting loop (stop point for HLE_VERIFY)
+800AB018  exit of the second lighting loop
+800AA0FC  fn_800AA068 normal loop, two per iteration
+800AA180  its exit
+800AA18C  fn_800AA068 normal loop, one per iteration
+800AA1D4  its exit
+800A9C74  fn_800A9C74 skinning, one bone, float (called from the same chunk, so no dispatch)
+800A9CEC  fn_800A9CEC skinning, blend, float
+800A9E1C  fn_800A9E1C skinning, one bone, s16
+800A9E94  fn_800A9E94 skinning, blend, s16
+800A9DE8  return from fn_800A9C74 (the generated blr jumps here inside the chunk; stop point for HLE_VERIFY)
+800A9DFC  return from fn_800A9CEC
+800A9F90  return from fn_800A9E1C
+800A9FA4  return from fn_800A9E94

@@ -37,6 +37,9 @@
 #undef ppc_psq_load_inline
 #undef ppc_psq_store_inline
 
+u8* g_fast_vm;
+u32 g_fast_vm_base, g_fast_vm_size;
+
 static u64 rng = 0x9E3779B97F4A7C15ull;
 static u64 rnd(void) { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return rng; }
 
@@ -73,9 +76,15 @@ int main(void) {
     A.hid2 = B.hid2 = 0xE0000000u;
     A.msr = B.msr = 0x2000;
     const u32 N = 4096;
+    // The flat VM window: the library side reads it through cpu_set_flat_vm, the fast side through g_fast_vm.
+    static u8 vm_a[4096], vm_b[4096];
+    cpu_set_flat_vm(vm_a, 0x7E000000u, sizeof vm_a);
+    g_fast_vm = vm_b, g_fast_vm_base = 0x7E000000u, g_fast_vm_size = sizeof vm_b;
     for (int i = 0; i < 200000; i++) {
         for (u32 k = 0; k < N; k++) A.ram[k] = (u8)rnd();
         memcpy(B.ram, A.ram, N);
+        memcpy(vm_a, A.ram, N);
+        memcpy(vm_b, A.ram, N);
         for (int r = 0; r < 32; r++) { A.fpr[r] = B.fpr[r] = rnd_f64(); A.ps1[r] = B.ps1[r] = rnd_f64(); }
         u32 gq = (u32)rnd();
         // keep type in {0,4..7}
@@ -85,7 +94,7 @@ int main(void) {
         A.fpscr = B.fpscr = (rnd() & 1) ? 0x4 : 0;
         A.cr = B.cr = 0;
         u8 d = rnd() % 32, a = rnd() % 32, b = rnd() % 32, c = rnd() % 32;
-        u32 ea = 0x80000000u + (u32)(rnd() % (N - 16));
+        u32 ea = ((rnd() & 1) ? 0x80000000u : 0x7E000000u) + (u32)(rnd() % (N - 16));
         bool w = rnd() & 1;
         int op = rnd() % 22;
         const char* name = "?";
@@ -135,6 +144,7 @@ int main(void) {
         }
         }
         check(name, i, &A, &B, A.ram, B.ram, N);
+        check(name, i, &A, &B, vm_a, vm_b, N);
     }
     printf("%d mismatches\n", fails);
     return fails != 0;
