@@ -403,6 +403,11 @@ static int emu_main(int argc, char** argv) {
     u32 ring[32] = {0};
     long long steps = 0;
     u64 cycles = 0, interrupts[16] = {0};
+    // ROTK_CPU_CLOCK=x overclocks the guest CPU: its code costs 1/x of the usual guest time
+    // (the timebase normally ticks once per 12 CPU cycles).
+    u64 cpu_oc_div = 12, oc_carry = 0;
+    if (getenv("ROTK_CPU_CLOCK") && atof(getenv("ROTK_CPU_CLOCK")) >= 0.5)
+        cpu_oc_div = (u64)(12 * atof(getenv("ROTK_CPU_CLOCK")) + 0.5);
     const char* why = "dispatch limit";
     for (; steps < limit; steps++) {
         // RealMode() rfi's to a physical address; run it from the cached mirror.
@@ -468,7 +473,13 @@ static int emu_main(int argc, char** argv) {
             hist_slot = -1;
         }
         cycles += (u64)used;
-        cpu.timebase += (u64)(used > 12 ? used / 12 : 1);
+        if (cpu_oc_div == 12) {
+            cpu.timebase += (u64)(used > 12 ? used / 12 : 1);
+        } else {
+            oc_carry += (u64)used;
+            cpu.timebase += oc_carry / cpu_oc_div;
+            oc_carry %= cpu_oc_div;
+        }
         hw_tick(cpu.timebase);
         if ((steps & 0xFFF) == 0) {
             double now = wall_seconds() - t0;

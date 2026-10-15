@@ -66,7 +66,8 @@ python3 tools/add_entry_hooks.py ../decomp/symbols_final.tsv out/generated/chunk
 |---|---|
 | `AUTOPRESS="A@6,START@20"` | scripted button presses (seconds since start) |
 | `NO_AUDIO`, `AUDIO_DUMP=x.wav` | mute; record the game's audio output |
-| `PERF_LOG=1`, `NO_THROTTLE=1` | per-10 s speed capacity; run unpaced |
+| `PERF_LOG=1`, `NO_THROTTLE=1` | per-10 s speed capacity and fps; run unpaced |
+| `ROTK_CPU_CLOCK=x` | guest CPU overclock (guest code costs 1/x of its usual time) |
 | `SYNC_GPU=1`, `NO_GPU=1` | GPU on the CPU thread; no window |
 | `PC_HIST=<s>` | hot functions by host time after `s` seconds |
 | `TRACE_AT=a,b TRACE_ARGS=1 TRACE_N=n` | dispatcher-level call trace with args |
