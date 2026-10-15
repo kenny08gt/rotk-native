@@ -50,3 +50,4 @@ recomp/need.txt
 .DS_Store
 __pycache__/
 recomp/build.sh
+recomp/tests/llvm_fp/out/

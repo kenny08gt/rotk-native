@@ -1,0 +1,260 @@
+diff --git a/src/backend/llvm/emitter.h b/src/backend/llvm/emitter.h
+index de35fe8..ce2dd23 100644
+--- a/src/backend/llvm/emitter.h
++++ b/src/backend/llvm/emitter.h
+@@ -170,6 +170,10 @@ private:
+   void emitInstructionService(u32 pc, u32 fallback_cycle_cost = 0);
+   llvm::Value *emitRuntimeBoundary(const DolIRInstruction &instruction);
+   void emitExactFloat(u64 descriptor);
++  void emitExactSingleInline(DolIRExactFloat op, u32 d, u32 a, u32 b, u32 c,
++                             u32 crfd);
++  void emitExactFloatHelper(DolIRExactFloat op, u32 d, u32 a, u32 b, u32 c,
++                            u32 crfd);
+   void emitExactPaired(u64 descriptor);
+   llvm::Value *emitPSQ(const DolIRInstruction &instruction);
+   llvm::Value *emitPSQLoad(const DolIRInstruction &, llvm::Value *, llvm::Value *, llvm::Value *);
+diff --git a/src/backend/llvm/floating_point.cpp b/src/backend/llvm/floating_point.cpp
+index ad4c59e..d3aad36 100644
+--- a/src/backend/llvm/floating_point.cpp
++++ b/src/backend/llvm/floating_point.cpp
+@@ -5,6 +5,7 @@
+ #include <llvm/IR/Constants.h>
+ #include <llvm/IR/Function.h>
+ #include <llvm/IR/Intrinsics.h>
++#include <llvm/IR/MDBuilder.h>
+ #include <llvm/IR/Module.h>
+ 
+ namespace dolllvm {
+@@ -18,6 +19,232 @@ void FunctionEmitter::emitExactFloat(u64 descriptor) {
+   u32 b = (descriptor >> 24) & 0xFFu;
+   u32 c = (descriptor >> 32) & 0xFFu;
+   u32 crfd = (descriptor >> 40) & 0xFFu;
++  bool singleResult = (op >= DOLIR_EXACT_FADDS && op <= DOLIR_EXACT_FDIVS) ||
++                      op == DOLIR_EXACT_FRSP ||
++                      (op >= DOLIR_EXACT_FMADDS && op <= DOLIR_EXACT_FNMSUBS);
++  if (singleResult)
++    emitExactSingleInline(op, d, a, b, c, crfd);
++  else
++    emitExactFloatHelper(op, d, a, b, c, crfd);
++}
++
++// Mirrors the C build's fast paths in recomp/chassis/fast_cpu.h bit for bit:
++// with FPSCR in its default mode (round-to-nearest, no enabled exceptions)
++// the single-precision result is computed inline in double, and the exact
++// helper only runs when the host result could differ (non-finite or tiny
++// results, denormal multipliers). The fast arm skips FPSCR bookkeeping, as
++// the C build does.
++void FunctionEmitter::emitExactSingleInline(DolIRExactFloat op, u32 d, u32 a,
++                                            u32 b, u32 c, u32 crfd) {
++  Type *f64 = Type::getDoubleTy(context_);
++  Type *f32 = Type::getFloatTy(context_);
++  Type *i64 = Type::getInt64Ty(context_);
++  Type *i32 = Type::getInt32Ty(context_);
++  auto fpr = [this](u32 reg) {
++    return stateValue(static_cast<DolIRStateSlot>(DOLIR_STATE_FPR0 + reg));
++  };
++  auto binary = [this](Intrinsic::ID id, Value *left, Value *right) {
++    return builder_.CreateConstrainedFPBinOp(id, left, right, nullptr,
++                                             "fp.math", nullptr,
++                                             RoundingMode::Dynamic,
++                                             fp::ebIgnore);
++  };
++  auto fusedMultiplyAdd = [this, f64](Value *x, Value *y, Value *z) {
++    Function *fma = Intrinsic::getDeclaration(
++        &module_, Intrinsic::experimental_constrained_fma, {f64});
++    return builder_.CreateConstrainedFPCall(fma, {x, y, z}, "fp.fma",
++                                            RoundingMode::Dynamic,
++                                            fp::ebIgnore);
++  };
++  auto roundToSingle = [this, f32](Value *value) {
++    return builder_.CreateConstrainedFPCast(
++        Intrinsic::experimental_constrained_fptrunc, value, f32, nullptr,
++        "fp.round", nullptr, RoundingMode::Dynamic, fp::ebIgnore);
++  };
++  auto bits64 = [this, i64](Value *value) {
++    return builder_.CreateBitCast(value, i64);
++  };
++  auto doubleFinite = [&](Value *value) {
++    Value *exponent = builder_.CreateAnd(
++        bits64(value), builder_.getInt64(0x7FF0000000000000ull));
++    return builder_.CreateICmpNE(exponent,
++                                 builder_.getInt64(0x7FF0000000000000ull));
++  };
++  auto singleFinite = [&](Value *value) {
++    Value *exponent = builder_.CreateAnd(builder_.CreateBitCast(value, i32),
++                                         builder_.getInt32(0x7F800000u));
++    return builder_.CreateICmpNE(exponent, builder_.getInt32(0x7F800000u));
++  };
++  // fast_force_25_bit: denormals are not ok, signed zeros pass unchanged,
++  // everything else (including inf/NaN) is rounded to 25 significant bits.
++  auto force25 = [&](Value *value, Value **ok) {
++    Value *bits = bits64(value);
++    Value *zeroExponent = builder_.CreateICmpEQ(
++        builder_.CreateAnd(bits, builder_.getInt64(0x7FF0000000000000ull)),
++        builder_.getInt64(0));
++    Value *denormal = builder_.CreateAnd(
++        zeroExponent,
++        builder_.CreateICmpNE(builder_.CreateShl(bits, 1),
++                              builder_.getInt64(0)));
++    *ok = builder_.CreateNot(denormal);
++    Value *rounded = builder_.CreateAdd(
++        builder_.CreateAnd(bits, builder_.getInt64(0xFFFFFFFFF8000000ull)),
++        builder_.CreateAnd(bits, builder_.getInt64(0x0000000008000000ull)));
++    return builder_.CreateBitCast(
++        builder_.CreateSelect(zeroExponent, bits, rounded), f64, "fp.force25");
++  };
++  // fast_single_fma: fma rounded to double then single can double-round on
++  // an exact tie; nudge the double result by one ulp toward the true value.
++  auto singleFMA = [&](Value *x, Value *y, Value *z) {
++    Value *result = fusedMultiplyAdd(x, y, z);
++    Value *bits = bits64(result);
++    Value *tie = builder_.CreateICmpEQ(
++        builder_.CreateAnd(bits, builder_.getInt64(0x000000001FFFFFFFull)),
++        builder_.getInt64(0x0000000010000000ull));
++    BasicBlock *regular =
++        BasicBlock::Create(context_, "fp_fma_round_regular", function_);
++    BasicBlock *rare =
++        BasicBlock::Create(context_, "fp_fma_round_fixup", function_);
++    BasicBlock *join =
++        BasicBlock::Create(context_, "fp_fma_round_join", function_);
++    builder_.CreateCondBr(tie, rare, regular,
++                          MDBuilder(context_).createBranchWeights(1, 1000000));
++
++    builder_.SetInsertPoint(regular);
++    builder_.CreateBr(join);
++
++    builder_.SetInsertPoint(rare);
++    Value *aPrime = binary(Intrinsic::experimental_constrained_fsub, z, result);
++    Value *bPrime =
++        binary(Intrinsic::experimental_constrained_fadd, result, aPrime);
++    Value *error = binary(Intrinsic::experimental_constrained_fadd,
++                          fusedMultiplyAdd(x, y, aPrime),
++                          binary(Intrinsic::experimental_constrained_fsub, z,
++                                 bPrime));
++    Value *zero = ConstantFP::get(f64, 0.0);
++    Value *nonzero = builder_.CreateFCmpUNE(error, zero);
++    Value *sameDirection =
++        builder_.CreateICmpEQ(builder_.CreateFCmpOGT(error, zero),
++                              builder_.CreateFCmpOGT(result, zero));
++    Value *corrected = builder_.CreateAdd(
++        bits, builder_.CreateSelect(sameDirection, builder_.getInt64(1),
++                                    builder_.getInt64(-1)));
++    Value *fixed = builder_.CreateBitCast(
++        builder_.CreateSelect(nonzero, corrected, bits), f64);
++    builder_.CreateBr(join);
++
++    builder_.SetInsertPoint(join);
++    PHINode *selected = builder_.CreatePHI(f64, 2, "fp.fma.exact");
++    selected->addIncoming(result, regular);
++    selected->addIncoming(fixed, rare);
++    return selected;
++  };
++
++  // fast_fp_mode: round-to-nearest with no enabled exceptions (NI may be set).
++  Value *fpscr = stateValue(DOLIR_STATE_FPSCR);
++  Value *ok = builder_.CreateICmpEQ(
++      builder_.CreateAnd(fpscr, builder_.getInt32(0xFBu)),
++      builder_.getInt32(0), "fpscr.fast");
++  Value *single = nullptr;
++  if (op >= DOLIR_EXACT_FMADDS && op <= DOLIR_EXACT_FNMSUBS) {
++    bool subtract = op == DOLIR_EXACT_FMSUBS || op == DOLIR_EXACT_FNMSUBS;
++    bool negative = op == DOLIR_EXACT_FNMADDS || op == DOLIR_EXACT_FNMSUBS;
++    Value *left = fpr(a);
++    Value *multiplierOk = nullptr;
++    Value *multiplier = force25(fpr(c), &multiplierOk);
++    Value *addend = subtract ? builder_.CreateFNeg(fpr(b)) : fpr(b);
++    single = roundToSingle(singleFMA(left, multiplier, addend));
++    ok = builder_.CreateAnd(
++        ok, builder_.CreateAnd(multiplierOk, singleFinite(single)));
++    if (negative)
++      single = builder_.CreateFNeg(single);
++  } else {
++    Value *result = nullptr;
++    Value *extra = nullptr;
++    switch (op) {
++    case DOLIR_EXACT_FADDS:
++      result = binary(Intrinsic::experimental_constrained_fadd, fpr(a), fpr(b));
++      break;
++    case DOLIR_EXACT_FSUBS:
++      result = binary(Intrinsic::experimental_constrained_fsub, fpr(a), fpr(b));
++      break;
++    case DOLIR_EXACT_FMULS: {
++      Value *multiplier = force25(fpr(c), &extra);
++      result = binary(Intrinsic::experimental_constrained_fmul, fpr(a),
++                      multiplier);
++      break;
++    }
++    case DOLIR_EXACT_FDIVS: {
++      Value *divisor = fpr(b);
++      result = binary(Intrinsic::experimental_constrained_fdiv, fpr(a), divisor);
++      extra = builder_.CreateFCmpUNE(divisor, ConstantFP::get(f64, 0.0));
++      break;
++    }
++    default:
++      result = fpr(b);
++      extra = doubleFinite(result);
++      break;
++    }
++    single = roundToSingle(result);
++    // fast_single_out: the single must be finite and the double result must
++    // not be a nonzero value below the single-precision normal range.
++    Value *magnitude = builder_.CreateAnd(
++        bits64(result), builder_.getInt64(0x7FFFFFFFFFFFFFFFull));
++    Value *tiny = builder_.CreateAnd(
++        builder_.CreateICmpNE(magnitude, builder_.getInt64(0)),
++        builder_.CreateICmpULT(magnitude,
++                               builder_.getInt64(0x3810000000000000ull)));
++    ok = builder_.CreateAnd(
++        ok, builder_.CreateAnd(singleFinite(single), builder_.CreateNot(tiny)));
++    if (extra)
++      ok = builder_.CreateAnd(ok, extra);
++  }
++
++  auto incomingRepresentations = fp_rep_;
++  auto incomingExactSingles = fp_exact_single_;
++  auto incomingDenormalSafety = fp_denormal_safe_;
++  auto incomingValueClasses = fp_value_class_;
++  auto incomingKnownState = known_state_;
++  bool incomingFPAvailable = fp_available_checked_;
++  BasicBlock *fast = BasicBlock::Create(context_, "fp_single_fast", function_);
++  BasicBlock *slow = BasicBlock::Create(context_, "fp_single_slow", function_);
++  BasicBlock *join = BasicBlock::Create(context_, "fp_single_join", function_);
++  builder_.CreateCondBr(ok, fast, slow,
++                        MDBuilder(context_).createBranchWeights(2000, 1));
++
++  builder_.SetInsertPoint(slow);
++  emitExactFloatHelper(op, d, a, b, c, crfd);
++  builder_.CreateBr(join);
++
++  fp_rep_ = incomingRepresentations;
++  fp_exact_single_ = incomingExactSingles;
++  fp_denormal_safe_ = incomingDenormalSafety;
++  fp_value_class_ = incomingValueClasses;
++  known_state_ = incomingKnownState;
++  fp_available_checked_ = incomingFPAvailable;
++  builder_.SetInsertPoint(fast);
++  writePairF32(d, builder_.CreateVectorSplat(2, single, "fp.single"), true);
++  builder_.CreateBr(join);
++
++  builder_.SetInsertPoint(join);
++  fp_rep_ = incomingRepresentations;
++  fp_exact_single_ = incomingExactSingles;
++  fp_denormal_safe_ = incomingDenormalSafety;
++  fp_value_class_ = incomingValueClasses;
++  known_state_ = incomingKnownState;
++  fp_available_checked_ = incomingFPAvailable;
++  fp_rep_[d] = FPRepresentation::PairF32;
++  fp_exact_single_[d] = true;
++  fp_denormal_safe_[d] = true;
++  fp_value_class_[d] = FPValueClass::Unknown;
++  known_state_[DOLIR_STATE_FPSCR] = nullptr;
++  known_state_[DOLIR_STATE_FPR0 + d] = nullptr;
++  known_state_[DOLIR_STATE_PS1_0 + d] = nullptr;
++  pending_fprf_ = nullptr;
++}
++
++void FunctionEmitter::emitExactFloatHelper(DolIRExactFloat op, u32 d, u32 a,
++                                           u32 b, u32 c, u32 crfd) {
+   auto fprSlot = [](u32 reg) {
+     return static_cast<DolIRStateSlot>(DOLIR_STATE_FPR0 + reg);
+   };
