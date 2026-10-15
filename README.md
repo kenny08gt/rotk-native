@@ -24,11 +24,42 @@ The game plays from boot to gameplay, with sound:
 - Memory card saves go to a file on your Mac. The game formats it the first time.
 - The picture keeps the 4:3 shape at any window size, with fullscreen, anisotropic filtering and
   optional MSAA.
-- Speed is 100% or more in menus, movies and most levels. The heaviest combat scenes run at about
-  88-97%, so they can slow down a little. That work continues.
+- The game runs at full speed in menus, movies and the first level. Some of the heaviest combat
+  scenes run at 88-97% and can slow down a little. See [Performance](#performance).
 
 Only the first levels are tested so far. Expect bugs further into the game. Please open an issue if
 you find one.
+
+## Performance
+
+Measured on an M1 Max (macOS 27) with default settings, over a 5-minute session: boot, logos, the
+intro movie, then Helm's Deep combat.
+
+| | Result |
+|---|---|
+| Guest CPU speed | 488 MHz equivalent, against the real Gekko's 486 MHz: **100% of real time** |
+| Menus, logos and the intro movie | **60 fps**, with up to 125% spare CPU capacity |
+| Helm's Deep combat | **45-60 fps**, with 70-100% spare CPU capacity |
+| Frames presented | 16,517 in 292 seconds |
+| Heaviest later combat scenes | 88-97% of real time (measured in earlier sessions) |
+
+Spare capacity is how much faster the CPU side could run if the game were not paced to real time.
+Anti-aliasing is expensive: with `ROTK_MSAA=4`, the GPU becomes the bottleneck and combat drops to
+71-77% of real time. Leave it off unless you have a faster GPU.
+
+Heavy combat ran at 47% of real time in the first playable build. These changes brought it to
+88-97%:
+
+| Change | Gameplay speed |
+|---|---|
+| First playable build | 47% |
+| Inline fast paths for guest memory and floating point (`chassis/fast_cpu.h`) | 57% |
+| GX command processing on its own GPU thread, `-O3 -mcpu=apple-m1`, profile-guided optimization, no-op host versions of the cache-flush routines, guest memory accesses that the compiler can prove don't alias the register file | 88-97% |
+
+Most of the remaining time is in the game's paired-single (SIMD) vertex skinning. DolRecomp's C
+backend keeps every guest register in memory, which costs about 25-30 host instructions per guest
+instruction there. To measure on your Mac, run from the terminal with `PERF_LOG=1`. It prints the
+spare capacity and frames per second every 10 seconds.
 
 ## Requirements
 
