@@ -1,0 +1,6 @@
+[submodule "third_party/aurora"]
+	path = third_party/aurora
+	url = https://github.com/encounter/aurora.git
+[submodule "third_party/dolrecomp"]
+	path = third_party/dolrecomp
+	url = https://github.com/ExpansionPak/DolRecomp.git

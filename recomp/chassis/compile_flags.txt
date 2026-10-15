@@ -1,0 +1,4 @@
+-std=c11
+-I../../third_party/dolrecomp/src
+-I../out/generated
+-I../build/_deps/sdl3-src/include

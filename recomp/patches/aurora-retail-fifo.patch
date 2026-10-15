@@ -1,0 +1,699 @@
+diff --git a/lib/dolphin/vi/vi.cpp b/lib/dolphin/vi/vi.cpp
+index 4c8dddc..f07e8a2 100644
+--- a/lib/dolphin/vi/vi.cpp
++++ b/lib/dolphin/vi/vi.cpp
+@@ -4,6 +4,8 @@
+ #include "aurora/math.hpp"
+ #include "vi_internal.hpp"
+ 
++#include <cstdio>
++#include <cstdlib>
+ #include <optional>
+ 
+ namespace aurora::vi {
+@@ -31,6 +33,28 @@ void configure(const GXRenderModeObj* rm) noexcept {
+ Vec2<uint32_t> configured_fb_size() noexcept {
+   return render_mode_size();
+ }
++
++float display_aspect() noexcept {
++  const auto [w, h] = render_mode_size();
++  if (g_renderMode && static_cast<uint32_t>(g_renderMode->viTVmode) == 0xFFFFFFFFu) {
++    return 4.0f / 3.0f;   // retail display copy: shown on a 4:3 TV regardless of EFB size
++  }
++  return h ? static_cast<float>(w) / static_cast<float>(h) : 4.0f / 3.0f;
++}
++
++void set_retail_display_size(uint32_t width, uint32_t height) noexcept {
++  if (width == 0 || height == 0 || getenv("AURORA_NO_RETAIL_SIZE")) return;
++  if (g_renderMode && g_renderMode->fbWidth == width && g_renderMode->efbHeight == height) return;
++  if (getenv("AURORA_VERBOSE")) fprintf(stderr, "retail display size %ux%u\n", width, height);
++  GXRenderModeObj rm{};
++  rm.viTVmode = static_cast<VITVMode>(0xFFFFFFFFu);
++  rm.fbWidth = static_cast<u16>(width);
++  rm.efbHeight = static_cast<u16>(height);
++  rm.xfbHeight = static_cast<u16>(height);
++  rm.viWidth = 640;
++  rm.viHeight = static_cast<u16>(height);
++  configure(&rm);
++}
+ } // namespace aurora::vi
+ 
+ extern "C" {
+diff --git a/lib/dolphin/vi/vi_internal.hpp b/lib/dolphin/vi/vi_internal.hpp
+index a711c3f..0e6684a 100644
+--- a/lib/dolphin/vi/vi_internal.hpp
++++ b/lib/dolphin/vi/vi_internal.hpp
+@@ -9,4 +9,9 @@
+ namespace aurora::vi {
+ void configure(const GXRenderModeObj* rm) noexcept;
+ Vec2<uint32_t> configured_fb_size() noexcept;
++// Aspect ratio the frame is shown at. Retail games render e.g. 512x448 and let the VI stretch it
++// to the TV's 4:3, so the shown aspect differs from fbWidth/efbHeight.
++float display_aspect() noexcept;
++// Retail FIFO: size of the EFB region the game copies to the display (from the display-copy registers).
++void set_retail_display_size(uint32_t width, uint32_t height) noexcept;
+ } // namespace aurora::vi
+diff --git a/lib/gfx/recording.cpp b/lib/gfx/recording.cpp
+index 190a1f5..13cecae 100644
+--- a/lib/gfx/recording.cpp
++++ b/lib/gfx/recording.cpp
+@@ -1,3 +1,4 @@
++#include <cstdlib>
+ #include "recording.hpp"
+ 
+ #include "encoding.hpp"
+@@ -590,6 +591,9 @@ void begin_recording(FramePacket& packet, size_t frameSlot) {
+   pass.label = pass_label("EFB");
+   set_efb_targets(pass);
+   pass.colorAttachments[SceneColorAttachmentIndex].clearValue = gx::g_gxState.clearColor;
++  if (std::getenv("AURORA_DEBUG_CLEAR") != nullptr) { // debugging aid: make undrawn pixels obvious
++    pass.colorAttachments[SceneColorAttachmentIndex].clearValue = Vec4<float>{1.f, 0.f, 1.f, 1.f};
++  }
+   pass.clearDepthValue = gx::clear_depth_value();
+   g_recorder.currentRenderPass = 0;
+   g_recorder.cachedViewport = gx::map_logical_viewport(gx::g_gxState.logicalViewport);
+diff --git a/lib/gfx/resources.hpp b/lib/gfx/resources.hpp
+index 3fdc0ee..66ccab0 100644
+--- a/lib/gfx/resources.hpp
++++ b/lib/gfx/resources.hpp
+@@ -7,7 +7,7 @@ inline constexpr bool UseTextureBuffer = true;
+ inline constexpr uint64_t UniformBufferSize = 25165824; // 24 MiB
+ inline constexpr uint64_t VertexBufferSize = 5242880;   // 5 MiB
+ inline constexpr uint64_t IndexBufferSize = 2097152;    // 2 MiB
+-inline constexpr uint64_t StorageBufferSize = 8388608;  // 8 MiB
++inline constexpr uint64_t StorageBufferSize = 67108864;  // 64 MiB (retail FIFO streams upload whole index ranges)
+ inline constexpr uint64_t TextureUploadSize = 25165824; // 24 MiB
+ 
+ namespace detail {
+diff --git a/lib/gx/command_processor.cpp b/lib/gx/command_processor.cpp
+index 2408c92..0a41d30 100644
+--- a/lib/gx/command_processor.cpp
++++ b/lib/gx/command_processor.cpp
+@@ -1,3 +1,4 @@
++#include <cstdlib>
+ #include "command_processor.hpp"
+ 
+ #include "../gfx/recording.hpp"
+@@ -20,6 +21,19 @@
+ #include <vector>
+ 
+ namespace aurora::gx::fifo {
++static const u8* s_guestRam = nullptr;
++static u32 s_guestRamSize = 0;
++
++bool retail_fifo() noexcept { return s_guestRam != nullptr; }
++
++const u8* guest_ptr(u32 phys, u32* available) noexcept {
++  const u32 offset = phys & 0x03FFFFFF;
++  if (s_guestRam == nullptr || offset >= s_guestRamSize) {
++    return nullptr;
++  }
++  *available = s_guestRamSize - offset;
++  return s_guestRam + offset;
++}
+ namespace {
+ constexpr Module Log{"aurora::gx::fifo"};
+ 
+@@ -259,9 +273,13 @@ ProcessResult process(const u8* data, u32 size) noexcept {
+ 
+       const u16 len = (addrLen >> 12) + 1;
+       const u16 dstAddr = addrLen & 0x0FFF;
+-      auto const& array = g_gxState.arrays[arrayType];
++      auto& array = g_gxState.arrays[arrayType];
+       const u32 srcOffset = static_cast<u32>(srcArrayIdx) * array.stride;
+       const u32 srcSize = static_cast<u32>(len) * sizeof(u32);
++      if (array.guestAvailable != 0 && srcOffset + srcSize > array.size) {
++        // Retail FIFO: matrix arrays have no known size; grow to cover this load.
++        array.size = std::min(srcOffset + srcSize, array.guestAvailable);
++      }
+       AURORA_ASSERT(array.data != nullptr, "indexed XF load from unmapped array {}", arrayType);
+       AURORA_ASSERT(srcOffset <= array.size && srcSize <= array.size - srcOffset,
+                     "indexed XF load outside array {}: offset={}, size={}, array size={}", arrayType, srcOffset,
+@@ -276,9 +294,16 @@ ProcessResult process(const u8* data, u32 size) noexcept {
+     }
+ 
+     case CP_CMD_CALL_DL: {
+-      // Call display list: 8 bytes (address + size)
+-      Log.warn("Ignoring nested GX_CMD_CALL_DL");
+-      reader.skip(8);
++      // Call display list: 8 bytes (address + size). Retail streams carry a guest physical address.
++      const u32 addr = reader.read<u32>();
++      const u32 size = reader.read<u32>();
++      u32 available = 0;
++      const u8* dl = guest_ptr(addr, &available);
++      if (dl != nullptr && size <= available) {
++        process(dl, size);
++      } else {
++        Log.warn("Ignoring GX_CMD_CALL_DL to 0x{:08X} (size {})", addr, size);
++      }
+       break;
+     }
+ 
+@@ -379,6 +404,64 @@ static u32 calc_vtx_size(GXVtxFmt fmt) noexcept {
+   return vtxSize;
+ }
+ 
++// Retail FIFO arrays have no known size: scan this draw's indices and grow each indexed
++// array's upload size to cover the highest index used.
++static void size_retail_arrays(GXVtxFmt fmt, const u8* vtx, u32 vtxCount, u32 vtxSize) noexcept {
++  const auto& vtxFmt = g_gxState.vtxFmts[fmt];
++  u32 offsets[GX_VA_TEX7 + 1] = {};
++  u32 offset = 0;
++  bool any = false;
++  for (int i = GX_VA_PNMTXIDX; i <= GX_VA_TEX7; ++i) {
++    offsets[i] = offset;
++    const auto& attrFmt = vtxFmt.attrs[i];
++    const bool nbt3 = i == GX_VA_NRM && attrFmt.cnt == GX_NRM_NBT3;
++    switch (g_gxState.vtxDesc[i]) {
++    case GX_DIRECT:
++      offset += comp_type_size(static_cast<GXAttr>(i), attrFmt.type) *
++                comp_cnt_count(static_cast<GXAttr>(i), attrFmt.cnt);
++      break;
++    case GX_INDEX8:
++      offset += nbt3 ? 3 : 1;
++      any |= i >= GX_VA_POS && g_gxState.arrays[i].guestAvailable != 0;
++      break;
++    case GX_INDEX16:
++      offset += nbt3 ? 6 : 2;
++      any |= i >= GX_VA_POS && g_gxState.arrays[i].guestAvailable != 0;
++      break;
++    default:
++      break;
++    }
++  }
++  if (!any) {
++    return;
++  }
++  for (int i = GX_VA_POS; i <= GX_VA_TEX7; ++i) {
++    auto& array = g_gxState.arrays[i];
++    const auto desc = g_gxState.vtxDesc[i];
++    if (array.guestAvailable == 0 || (desc != GX_INDEX8 && desc != GX_INDEX16)) {
++      continue;
++    }
++    u32 maxIdx = 0;
++    for (u32 v = 0; v < vtxCount; ++v) {
++      const u8* p = vtx + v * vtxSize + offsets[i];
++      const u32 idx = desc == GX_INDEX8 ? p[0] : (static_cast<u32>(p[0]) << 8 | p[1]);
++      if (idx > maxIdx && (desc == GX_INDEX8 ? idx != 0xFF : idx != 0xFFFF)) {
++        maxIdx = idx;
++      }
++    }
++    const auto& attrFmt = vtxFmt.attrs[i];
++    const u32 elem = comp_type_size(static_cast<GXAttr>(i), attrFmt.type) *
++                     comp_cnt_count(static_cast<GXAttr>(i), attrFmt.cnt);
++    const u32 stride = array.stride != 0 ? array.stride : elem;
++    const u32 needed = std::min<u32>(AURORA_ALIGN(maxIdx * stride + std::max(elem, stride), 4u), array.guestAvailable);
++    if (needed > array.size) {
++      array.size = needed;
++      array.cachedRange = {};
++      g_gxState.dirty |= DirtyImmediates;
++    }
++  }
++}
++
+ static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Range vertRange, gfx::Range idxRange,
+                          u32 numIndices) noexcept {
+   auto& state = g_gxState;
+@@ -488,6 +571,106 @@ static void handle_draw_unmerged(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, g
+   push_gx_draw(prim, fmt, vtxCount, vertRange, idxRange, numIndices);
+ }
+ 
++// Debugging aid: AURORA_DUMP_DRAWS=<n> logs the state of the first n draws.
++static void dump_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, const u8* vtx, u32 vtxSize) noexcept {
++  static long remaining = [] {
++    const char* v = std::getenv("AURORA_DUMP_DRAWS");
++    return v != nullptr ? std::strtol(v, nullptr, 10) : 0L;
++  }();
++  static long skip = [] {
++    const char* v = std::getenv("AURORA_DUMP_SKIP");
++    return v != nullptr ? std::strtol(v, nullptr, 10) : 0L;
++  }();
++  if (skip > 0) {
++    --skip;
++    return;
++  }
++  if (remaining <= 0) {
++    return;
++  }
++  --remaining;
++  const auto& st = g_gxState;
++  const auto& vp = st.renderViewport;
++  const auto& sc = st.renderScissor;
++  std::string bytes;
++  for (u32 i = 0; i < std::min<u32>(vtxSize, 24); ++i) {
++    bytes += fmt::format("{:02x}", vtx[i]);
++  }
++  std::string desc;
++  for (int i = GX_VA_PNMTXIDX; i <= GX_VA_TEX7; ++i) {
++    if (st.vtxDesc[i] != GX_NONE) {
++      desc += fmt::format(" a{}={}", i, static_cast<int>(st.vtxDesc[i]));
++    }
++  }
++  const auto& p = st.proj;
++  Log.info("draw prim=0x{:02x} fmt={} n={} vsz={} vp=({},{},{},{} z{}..{}) sc=({},{},{},{}) cw={} aw={} zc={} zf={} zw={} "
++           "cull={} blend={} pnmtx={} proj=[{:.3f} {:.3f} {:.3f} {:.3f} | {:.3f} {:.3f}] desc:{} v0={} tex0=({}x{} fmt {} {}) "
++           "tevstages={}",
++           static_cast<int>(prim), static_cast<int>(fmt), vtxCount, vtxSize, vp.left, vp.top, vp.width, vp.height,
++           vp.znear, vp.zfar, sc.x, sc.y, sc.width, sc.height, st.colorUpdate, st.alphaUpdate, st.depthCompare,
++           static_cast<int>(st.depthFunc), st.depthUpdate, static_cast<int>(st.cullMode), static_cast<int>(st.blendMode),
++           st.currentPnMtx, p[0][0], p[1][1], p[2][2], p[2][3], p[3][2], p[3][3], desc, bytes,
++           st.loadedTextures[0].width(), st.loadedTextures[0].height(), st.loadedTextures[0].format(),
++           fmt::ptr(st.loadedTextures[0].data), st.numTevStages);
++  // Luma statistics of texture 0 (first 64 KiB): tells "black content" from "rendering problem".
++  u64 sum = 0;
++  u32 maxv = 0;
++  if (const auto* t = static_cast<const u8*>(st.loadedTextures[0].data); st.loadedTextures[0].has_data()) {
++    for (u32 i = 0; i < 65536; ++i) {
++      sum += t[i];
++      maxv = std::max<u32>(maxv, t[i]);
++    }
++  }
++  Log.info("  tex0 bytes: avg {:.1f} max {}", sum / 65536.0, maxv);
++  if (st.numTevStages > 1) {
++    for (u32 i = 0; i < st.numTevStages; ++i) {
++      const auto& t = st.tevStages[i];
++      Log.info("  stage{} C[a{} b{} c{} d{} op{} bias{} sc{} out{} clamp{}] A[a{} b{} c{} d{} op{} out{}] kc{} ka{} map{} coord{} chan{} "
++               "swapRas{} swapTex{}",
++               i, (int)t.colorPass.a, (int)t.colorPass.b, (int)t.colorPass.c, (int)t.colorPass.d, (int)t.colorOp.op,
++               (int)t.colorOp.bias, (int)t.colorOp.scale, (int)t.colorOp.outReg, t.colorOp.clamp, (int)t.alphaPass.a,
++               (int)t.alphaPass.b, (int)t.alphaPass.c, (int)t.alphaPass.d, (int)t.alphaOp.op, (int)t.alphaOp.outReg,
++               (int)t.kcSel, (int)t.kaSel, (int)t.texMapId, (int)t.texCoordId, (int)t.channelId, (int)t.tevSwapRas,
++               (int)t.tevSwapTex);
++    }
++    for (u32 k = 0; k < 4; ++k) {
++      Log.info("  kcolor{} = {:.3f} {:.3f} {:.3f} {:.3f}  reg{} = {:.3f} {:.3f} {:.3f} {:.3f}", k, st.kcolors[k][0],
++               st.kcolors[k][1], st.kcolors[k][2], st.kcolors[k][3], k, st.colorRegs[k][0], st.colorRegs[k][1],
++               st.colorRegs[k][2], st.colorRegs[k][3]);
++    }
++    for (u32 t = 0; t < 2; ++t) {
++      const auto& g = st.tcgs[t];
++      Log.info("  texgen{}: type={} src={} mtx={} post={} norm={}", t, (int)g.type, (int)g.src, (int)g.mtx, (int)g.postMtx,
++               g.normalize);
++    }
++    {
++      std::string all;
++      for (u32 i = 0; i < std::min<u32>(vtxSize * vtxCount, 96); ++i) all += fmt::format("{:02x}{}", vtx[i], (i + 1) % vtxSize ? "" : " | ");
++      Log.info("  verts: {}", all);
++      const auto& vf = st.vtxFmts[fmt];
++      Log.info("  vat: pos cnt{} type{} frac{} | tex0 cnt{} type{} frac{} | tex1 cnt{} type{} frac{}", (int)vf.attrs[GX_VA_POS].cnt,
++               (int)vf.attrs[GX_VA_POS].type, (int)vf.attrs[GX_VA_POS].frac, (int)vf.attrs[GX_VA_TEX0].cnt,
++               (int)vf.attrs[GX_VA_TEX0].type, (int)vf.attrs[GX_VA_TEX0].frac, (int)vf.attrs[GX_VA_TEX1].cnt,
++               (int)vf.attrs[GX_VA_TEX1].type, (int)vf.attrs[GX_VA_TEX1].frac);
++    }
++    Log.info("  numChans={} blend src={} dst={} alphaCompare=({} {} {} {} {})", st.numChans, (int)st.blendFacSrc,
++             (int)st.blendFacDst, (int)st.alphaCompare.comp0, st.alphaCompare.ref0, (int)st.alphaCompare.op,
++             (int)st.alphaCompare.comp1, st.alphaCompare.ref1);
++    for (u32 c = 0; c < 4; ++c) {
++      const auto& cfg = st.colorChannelConfig[c];
++      const auto& cs = st.colorChannelState[c];
++      Log.info("  chan{}: matSrc={} ambSrc={} light={} mat=({:.2f} {:.2f} {:.2f} {:.2f}) amb=({:.2f} {:.2f} {:.2f} {:.2f})", c,
++               (int)cfg.matSrc, (int)cfg.ambSrc, cfg.lightingEnabled, cs.matColor[0], cs.matColor[1], cs.matColor[2],
++               cs.matColor[3], cs.ambColor[0], cs.ambColor[1], cs.ambColor[2], cs.ambColor[3]);
++    }
++    for (u32 m = 0; m < 4; ++m) {
++      const auto& tx = st.loadedTextures[m];
++      Log.info("  map{}: {}x{} fmt {} guest 0x{:08X}", m, tx.width(), tx.height(), tx.format(),
++               tx.data && s_guestRam ? static_cast<u32>(static_cast<const u8*>(tx.data) - s_guestRam) | 0x80000000u : 0u);
++    }
++  }
++}
++
+ static void draw_prim(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, ByteReader& reader) noexcept {
+   ZoneScoped;
+   u32 vtxSize;
+@@ -500,6 +683,8 @@ static void draw_prim(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, ByteReader&
+   if (totalVtxBytes > reader.remaining())
+     UNLIKELY { handle_draw_overrun(totalVtxBytes, reader); }
+ 
++  size_retail_arrays(fmt, reader.data() + reader.offset(), vtxCount, vtxSize); // may dirty: before merge check
++  dump_draw(prim, fmt, vtxCount, reader.data() + reader.offset(), vtxSize);
+   const bool cleanState = g_gxState.dirty == 0 && fmt == sDrawCache.lastDrawFmt && sDrawCache.lineMode == 0 &&
+                           prim != GX_LINES && prim != GX_LINESTRIP && prim != GX_POINTS;
+   auto* lastDraw = cleanState ? gfx::get_last_draw_command<DrawData>() : nullptr;
+@@ -779,3 +964,8 @@ void clear_draw_cache() noexcept {
+ }
+ 
+ } // namespace aurora::gx::fifo
++
++extern "C" void aurora_gx_set_guest_ram(const void* base, uint32_t size) {
++  aurora::gx::fifo::s_guestRam = static_cast<const u8*>(base);
++  aurora::gx::fifo::s_guestRamSize = size;
++}
+diff --git a/lib/gx/fifo.cpp b/lib/gx/fifo.cpp
+index bcaba60..99a9646 100644
+--- a/lib/gx/fifo.cpp
++++ b/lib/gx/fifo.cpp
+@@ -24,7 +24,8 @@ uint32_t sDlWritePos = 0;
+ 
+ namespace {
+ constexpr Module Log{"aurora::gx::fifo"};
+-constexpr auto kProcessingMode = ProcessingMode::Thread;
++// Retail-FIFO port: process inline so guest RAM is read in program order.
++constexpr auto kProcessingMode = ProcessingMode::Inline;
+ constexpr uint32_t kDrawBatchSize = 1;
+ 
+ bool sFrameActive = false;
+@@ -282,3 +283,9 @@ void clear_buffer() {
+ }
+ 
+ } // namespace aurora::gx::fifo
++
++// Retail FIFO entry point: raw big-endian GX command bytes drained from the guest's FIFO.
++extern "C" void aurora_gx_feed_fifo(const void* data, uint32_t size) {
++  aurora::gx::fifo::write_data(data, size);
++  aurora::gx::fifo::publish();
++}
+diff --git a/lib/gx/gx.cpp b/lib/gx/gx.cpp
+index 490de4c..af3b1b6 100644
+--- a/lib/gx/gx.cpp
++++ b/lib/gx/gx.cpp
+@@ -132,7 +132,28 @@ wgpu::BlendState to_blend_state(GXBlendMode mode, GXBlendFactor srcFac, GXBlendF
+     break;
+   case GX_BM_LOGIC:
+     switch (op) {
+-      DEFAULT_FATAL("unsupported logic op {}", underlying(op));
++    default: {
++      // WebGPU has no logic ops: approximate with blending (after Dolphin's
++      // BlendingState::ApproximateLogicOpWithBlending). {subtract, src, dst} per GXLogicOp.
++      using F = wgpu::BlendFactor;
++      static constexpr struct { bool sub; F src; F dst; } kApprox[16] = {
++          {false, F::Zero, F::Zero},           {false, F::Dst, F::Zero},          // CLEAR, AND
++          {true, F::One, F::OneMinusSrc},      {false, F::One, F::Zero},          // REVAND, COPY
++          {true, F::Dst, F::One},              {false, F::Zero, F::One},          // INVAND, NOOP
++          {false, F::OneMinusDst, F::OneMinusSrc}, {false, F::OneMinusDst, F::One}, // XOR, OR
++          {false, F::OneMinusDst, F::OneMinusSrc}, {false, F::OneMinusDst, F::Zero}, // NOR, EQUIV
++          {false, F::OneMinusDst, F::OneMinusDst}, {false, F::One, F::OneMinusDstAlpha}, // INV, REVOR
++          {false, F::OneMinusSrc, F::Zero},    {false, F::OneMinusSrc, F::One},   // INVCOPY, INVOR
++          {false, F::OneMinusDst, F::OneMinusSrc}, {false, F::One, F::One},       // NAND, SET
++      };
++      const auto& a = kApprox[underlying(op) & 15];
++      colorBlendComponent = {
++          .operation = a.sub ? wgpu::BlendOperation::ReverseSubtract : wgpu::BlendOperation::Add,
++          .srcFactor = a.src,
++          .dstFactor = a.dst,
++      };
++      break;
++    }
+     case GX_LO_CLEAR:
+       colorBlendComponent = {
+           .operation = wgpu::BlendOperation::Add,
+diff --git a/lib/gx/gx.hpp b/lib/gx/gx.hpp
+index 77a821d..51e5a9f 100644
+--- a/lib/gx/gx.hpp
++++ b/lib/gx/gx.hpp
+@@ -55,7 +55,9 @@ constexpr u32 MaxTevStages = GX_MAX_TEVSTAGE;
+ constexpr u32 MaxColorChannels = 4;
+ constexpr u32 MaxTevRegs = 4; // TEVPREV, TEVREG0-2
+ constexpr u32 MaxKColors = GX_MAX_KCOLOR;
+-constexpr u32 MaxTexMtx = 10;
++// 10 texture matrices (rows 30-59) plus rows 60-62: retail code may use row 60 as a position
++// matrix. Texgens that name GX_IDENTITY still get a synthesized identity.
++constexpr u32 MaxTexMtx = 11;
+ constexpr u32 MaxPTTexMtx = 20;
+ constexpr u32 MaxTexCoord = GX_MAX_TEXCOORD;
+ constexpr u32 MaxVtxAttr = GX_VA_MAX_ATTR;
+@@ -299,6 +301,9 @@ struct AttrArray {
+   u8 stride;
+   bool le = true;
+   gfx::Range cachedRange;
++  // Retail FIFO: bytes addressable from data to the end of guest RAM (0 = size is exact).
++  // `size` then grows per draw to cover the highest index used.
++  u32 guestAvailable = 0;
+ };
+ inline bool operator==(const AttrArray& lhs, const AttrArray& rhs) {
+   return lhs.data == rhs.data && lhs.size == rhs.size && lhs.stride == rhs.stride && lhs.le == rhs.le;
+diff --git a/lib/gx/regs.cpp b/lib/gx/regs.cpp
+index 9c7151c..c0806a7 100644
+--- a/lib/gx/regs.cpp
++++ b/lib/gx/regs.cpp
+@@ -1,3 +1,4 @@
++#include "../dolphin/vi/vi_internal.hpp"
+ #include "regs.hpp"
+ 
+ #include "gx_fmt.hpp"
+@@ -135,6 +136,18 @@ void bp_scissor(u8, u32) noexcept {
+   const u32 scis1 = g_gxState.bpRegCache[0x21];
+ 
+   const u32 boxOffset = g_gxState.bpRegCache[0x59];
++  if (retail_fifo()) {
++    // Hardware convention: coordinates carry a +342 bias and the box offset register holds
++    // (offset + 342) >> 1, so the screen rectangle is register - 2 * boxOffset.
++    const s32 offX = static_cast<s32>(reg_get(boxOffset, 10, 0)) * 2;
++    const s32 offY = static_cast<s32>(reg_get(boxOffset, 10, 10)) * 2;
++    const s32 top = static_cast<s32>(reg_get(scis0, 11, 0)) - offY;
++    const s32 left = static_cast<s32>(reg_get(scis0, 11, 12)) - offX;
++    const s32 bottom = static_cast<s32>(reg_get(scis1, 11, 0)) - offY;
++    const s32 right = static_cast<s32>(reg_get(scis1, 11, 12)) - offX;
++    set_logical_scissor({left, top, std::max(right - left + 1, 0), std::max(bottom - top + 1, 0)});
++    return;
++  }
+   // The box offset fields are signed 9-bit values and also halved, like the viewport registers. Sign extend.
+   const s32 offsX = static_cast<s32>(reg_get(boxOffset, 10, 0)) << 23 >> 22;
+   const s32 offsY = static_cast<s32>(reg_get(boxOffset, 10, 10)) << 23 >> 22;
+@@ -278,14 +291,54 @@ void bp_clear_depth(u8, u32 value) noexcept { g_gxState.clearDepth = reg_get(val
+ void bp_efb_copy(u8, u32 value) noexcept {
+   const bool clear = reg_get(value, 1, 11) != 0;
+   if (reg_get(value, 1, 14) != 0) {
+-    Log.warn("STUB: display copy is not implemented");
++    // Display copy: the frame is already in the render target. Its source rectangle tells us
++    // the game's real EFB size, which drives the window's logical framebuffer.
++    if (retail_fifo()) {
++      const u32 src = g_gxState.bpRegCache[0x4A];
++      vi::set_retail_display_size(reg_get(src, 10, 0) + 1, reg_get(src, 10, 10) + 1);
++    }
+   } else {
+     copy_tex(g_gxState.texCopyDest, clear);
+   }
+ }
+ 
++// Retail streams address palettes by TMEM offset (512-byte units); map each offset in use
++// onto one of Aurora's MaxTluts palette slots.
++static u32 retail_tlut_slot(u32 tmemOffset) noexcept {
++  static std::array<s16, 1024> slotForOffset = [] {
++    std::array<s16, 1024> a{};
++    a.fill(-1);
++    return a;
++  }();
++  static u32 nextSlot = 0;
++  auto& slot = slotForOffset[tmemOffset & 0x3FF];
++  if (slot < 0) {
++    slot = static_cast<s16>(nextSlot++ % MaxTluts);
++    for (auto& other : slotForOffset) {   // the reused slot no longer belongs to its old offset
++      if (&other != &slot && other == slot) {
++        other = -1;
++      }
++    }
++  }
++  return static_cast<u32>(slot);
++}
++
+ // TLUT load trigger (0x65)
+ void bp_tlut_load(u8, u32 value) noexcept {
++  if (retail_fifo()) {
++    // 0x64: main-RAM address >> 5; 0x65: TMEM offset (bits 0-9), entry count / 16 (bits 10-20)
++    const u32 addr = reg_get(g_gxState.bpRegCache[0x64], 21, 0) << 5;
++    auto& slot = g_gxState.loadedTluts[retail_tlut_slot(reg_get(value, 10, 0))];
++    u32 available = 0;
++    slot.loadTlut0 = g_gxState.bpRegCache[0x64];
++    slot.data = guest_ptr(addr, &available);
++    slot.numEntries = static_cast<u16>(reg_get(value, 11, 10) * 16);
++    slot.tlutObjId = 0; // content-hashed
++    ++slot.tlutDataVersion;
++    slot.flags &= ~0x80u;
++    texture::invalidate_bindings();
++    return;
++  }
+   const auto idx = reg_get(value, 10, 0);
+   if (idx < MaxTluts) {
+     auto& slot = g_gxState.loadedTluts[idx];
+@@ -497,9 +550,25 @@ void bp_tex(u8 reg, u32 value) noexcept {
+     slot.mHeight = 0;
+     slot.mFormat = gfx::InvalidTextureFormat;
+     break;
+-  case 5: // Image3
++  case 6: { // SETTLUT: TMEM offset (bits 0-9) and palette format (bits 10-11) of this map's palette
++    if (retail_fifo()) {
++      const u32 tlutIdx = retail_tlut_slot(reg_get(value, 10, 0));
++      slot.tlut = static_cast<GXTlut>(tlutIdx);
++      g_gxState.loadedTluts[tlutIdx].format = static_cast<GXTlutFmt>(reg_get(value, 2, 10));
++    }
++    break;
++  }
++  case 5: { // Image3: main-RAM address >> 5
+     slot.image3 = value;
++    u32 available = 0;
++    if (const u8* data = guest_ptr((value & 0x00FFFFFF) << 5, &available)) {
++      slot.data = data;
++      slot.texObjId = 0; // no object identity in a retail stream: use the content cache
++      const u32 minFilter = reg_get(slot.mode0, 3, 5);
++      slot.flags = (minFilter == 1 || minFilter == 2 || minFilter == 5 || minFilter == 6) ? 1 : 0;
++    }
+     break;
++  }
+   default:
+     break;
+   }
+@@ -558,7 +627,7 @@ constexpr auto kBpRegs = [] {
+       regs[base + 0x0C + i] = {};                      // Image1 (GXTexRegion)
+       regs[base + 0x10 + i] = {};                      // Image2 (GXTexRegion)
+       regs[base + 0x14 + i] = {bp_tex, DirtyTextures}; // Image3
+-      regs[base + 0x18 + i] = {};                      // TLUT region TMEM offset
++      regs[base + 0x18 + i] = {bp_tex, DirtyTextures}; // SETTLUT (retail streams)
+     }
+   }
+   for (u8 r = 0xC0; r <= 0xDE; r += 2) {
+@@ -683,8 +752,25 @@ void cp_vat_c(u8 addr, u32 value) noexcept {
+   g_gxState.clearVtxSizeCache();
+ }
+ 
+-void cp_arraybase_unsupported(u8, u32) noexcept {
+-  Log.error("CP_REG_ARRAYBASE_ID is not supported. Use GX_AURORA_LOAD_ARRAYBASE instead.");
++void cp_arraybase(u8 addr, u32 value) noexcept {
++  u32 available = 0;
++  const u8* data = guest_ptr(value, &available);
++  if (data == nullptr) {
++    Log.error("CP_REG_ARRAYBASE_ID 0x{:02X}: no guest RAM for address 0x{:08X}", addr, value);
++    return;
++  }
++  auto& array = g_gxState.arrays[addr - 0xA0 + GX_VA_POS];
++  if (array.data != data || array.guestAvailable != available || array.le) {
++    if (array.le) {
++      g_gxState.dirty |= DirtyPipeline; // endianness is baked into the shader
++    }
++    array.data = data;
++    array.size = 0; // grown per draw from the indices actually used
++    array.guestAvailable = available;
++    array.le = false;
++    array.cachedRange = {};
++    g_gxState.dirty |= DirtyImmediates;
++  }
+ }
+ 
+ // Array strides (0xB0-0xBF)
+@@ -707,7 +793,7 @@ constexpr auto kCpRegs = [] {
+     regs[0x90 + i] = {cp_vat_c, DirtyPipeline};
+   }
+   for (u8 i = 0; i < 0x10; ++i) {
+-    regs[0xA0 + i] = {cp_arraybase_unsupported, 0, /* alwaysHandle */ true};
++    regs[0xA0 + i] = {cp_arraybase, 0, /* alwaysHandle */ true};
+     regs[0xB0 + i] = {cp_array_stride, DirtyPipeline};
+   }
+   return regs;
+@@ -896,9 +982,10 @@ void xf_load_viewport(const u8* data) noexcept {
+   f32 oz = read_bits<f32>(data + 20);
+   f32 width = sx * 2.0f;
+   f32 height = -sy * 2.0f;
++  const f32 bias = retail_fifo() ? 342.0f : 340.0f; // retail SDK origin bias is 342
+   set_logical_viewport({
+-      .left = ox - 340.0f - width / 2.0f,
+-      .top = oy - 340.0f - height / 2.0f,
++      .left = ox - bias - width / 2.0f,
++      .top = oy - bias - height / 2.0f,
+       .width = width,
+       .height = height,
+       .znear = (oz - sz) / 1.6777215e7f,
+@@ -1004,8 +1091,8 @@ bool copy_xf_data(u32 addr, const u8* data, u32 len, std::endian e) noexcept {
+     }
+     return true;
+   }
+-  if (addr < 0x0F0) {
+-    // Texture matrices (0x078-0x0EF)
++  if (addr < 0x0FC) {
++    // Texture matrices (0x078-0x0EF) and the row-60 matrix (0x0F0-0x0FB)
+     u32 texBase = addr - 0x078;
+     u32 mtxIdx = texBase / 12;
+     u32 startOffset = texBase % 12;
+diff --git a/lib/gx/regs.hpp b/lib/gx/regs.hpp
+index ccdff0a..deb8392 100644
+--- a/lib/gx/regs.hpp
++++ b/lib/gx/regs.hpp
+@@ -18,4 +18,10 @@ void handle_xf(u16 addr, std::span<const u8> data) noexcept;
+ 
+ bool copy_xf_data(u32 addr, const u8* data, u32 len, std::endian e) noexcept;
+ 
++// Retail FIFO support: GameCube physical addresses in CP/BP registers and CALL_DL are
++// resolved into a host copy of guest main RAM registered with aurora_gx_set_guest_ram().
++const u8* guest_ptr(u32 phys, u32* available) noexcept;
++// True when decoding a retail stream (hardware register conventions, e.g. the +342 screen bias).
++bool retail_fifo() noexcept;
++
+ } // namespace aurora::gx::fifo
+diff --git a/lib/gx/shader.cpp b/lib/gx/shader.cpp
+index 2d10095..4cd537a 100644
+--- a/lib/gx/shader.cpp
++++ b/lib/gx/shader.cpp
+@@ -1,3 +1,4 @@
++#include "regs.hpp"
+ #include "../gfx/hash.hpp"
+ #include "../gfx/types.hpp"
+ 
+@@ -1483,7 +1484,14 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+     CHECK(stage.texCoordId != GX_TEXCOORD_NULL, "unmapped texcoord for stage {}", i);
+     if (uvIn.empty()) {
+       // No indirect texturing
+-      uvIn = fmt::format("tex{0}_uv", underlying(stage.texCoordId));
++      if (fifo::retail_fifo()) {
++        // Hardware: texel coordinate = uv * SU scale (BP 0x30-0x3F, set automatically from the
++        // texture size or manually via GXSetTexCoordScaleManually); normalize by the texture size.
++        uvIn = fmt::format("(tex{0}_uv * ubuf.texcoord_scale[{0}].xy / ubuf.tex{1}_size_bias.xy)",
++                           underlying(stage.texCoordId), underlying(stage.texMapId));
++      } else {
++        uvIn = fmt::format("tex{0}_uv", underlying(stage.texCoordId));
++      }
+     }
+     fragmentFnPre +=
+         fmt::format("\n    var sampled{0} = textureSampleBias(tex{1}, tex{1}_samp, {2}, ubuf.tex{1}_size_bias.z);", i,
+diff --git a/lib/gx/texture.cpp b/lib/gx/texture.cpp
+index 33a8c99..3a5a752 100644
+--- a/lib/gx/texture.cpp
++++ b/lib/gx/texture.cpp
+@@ -821,6 +821,9 @@ void evict_copy_texture(const void* dest) noexcept {
+   texture::invalidate_bindings();
+ }
+ 
++// Retail-FIFO debugging: why sampled textures resolve or not (read via aurora_gx_texture_debug).
++static u64 s_dbgResolved, s_dbgNoData, s_dbgPaletteNoTlut, s_dbgNullHandle;
++
+ void resolve_sampled_textures(const ShaderInfo& info) noexcept {
+   ZoneScoped;
+   apply_pending_invalidations();
+@@ -859,8 +862,24 @@ void resolve_sampled_textures(const ShaderInfo& info) noexcept {
+       handle = texture::resolve_static_texture(obj);
+     }
+ 
++    if (handle) {
++      ++s_dbgResolved;
++    } else if (!obj.has_data()) {
++      ++s_dbgNoData;
++    } else if (is_palette_format(obj.format())) {
++      ++s_dbgPaletteNoTlut;
++    } else {
++      ++s_dbgNullHandle;
++    }
+     obj.mFormat = resolved_format_for_handle(handle);
+     textureBind = gfx::TextureBind{obj, std::move(handle), s_bindGeneration};
+   }
+ }
+ } // namespace aurora::gx
++
++extern "C" void aurora_gx_texture_debug(unsigned long long out[4]) {
++  out[0] = aurora::gx::s_dbgResolved;
++  out[1] = aurora::gx::s_dbgNoData;
++  out[2] = aurora::gx::s_dbgPaletteNoTlut;
++  out[3] = aurora::gx::s_dbgNullHandle;
++}
+diff --git a/lib/window.cpp b/lib/window.cpp
+index cf84de3..e309743 100644
+--- a/lib/window.cpp
++++ b/lib/window.cpp
+@@ -490,8 +490,7 @@ AuroraWindowSize get_window_size() {
+   if (g_frameBufferAspectFit) {
+     const auto [baseW, baseH] = vi::configured_fb_size();
+     if (baseW > 0 && baseH > 0) {
+-      const auto [fitW, fitH] =
+-          fit_frame_buffer_to_aspect(fb_w, fb_h, static_cast<float>(baseW) / static_cast<float>(baseH));
++      const auto [fitW, fitH] = fit_frame_buffer_to_aspect(fb_w, fb_h, vi::display_aspect());
+       fb_w = fitW;
+       fb_h = fitH;
+     }

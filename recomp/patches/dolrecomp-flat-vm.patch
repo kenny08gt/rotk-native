@@ -1,0 +1,41 @@
+diff --git a/src/cpu/cpu.c b/src/cpu/cpu.c
+index 27297aa..5254e6e 100644
+--- a/src/cpu/cpu.c
++++ b/src/cpu/cpu.c
+@@ -110,7 +110,24 @@ void cpu_reset(CPUState* cpu) {
+ 
+ }
+ 
++// GameCube SDK virtual memory (VMInit maps 0x7E000000+ through the MMU, backed by ARAM).
++// Hosts may back the whole window with flat memory, as if every page were resident.
++static u8* s_gc_vm;
++static u32 s_gc_vm_base, s_gc_vm_size;
++
++void cpu_set_flat_vm(u8* host, u32 base, u32 size) {
++    s_gc_vm = host;
++    s_gc_vm_base = base;
++    s_gc_vm_size = size;
++}
++
+ static u8* resolve_addr(CPUState* cpu, u32 addr, u32* avail) {
++    if (s_gc_vm && addr - s_gc_vm_base < s_gc_vm_size) {
++        u32 offset = addr - s_gc_vm_base;
++        *avail = s_gc_vm_size - offset;
++        return s_gc_vm + offset;
++    }
++
+     if (addr >= GC_RAM_BASE && addr < GC_RAM_BASE + cpu->ram_size) {
+         u32 offset = addr - GC_RAM_BASE;
+         *avail = cpu->ram_size - offset;
+diff --git a/src/cpu/cpu.h b/src/cpu/cpu.h
+index 29510f8..e98a690 100644
+--- a/src/cpu/cpu.h
++++ b/src/cpu/cpu.h
+@@ -130,6 +130,7 @@ extern void* g_mem_write_journal_user;
+ void ppc_set_mem_write_journal(PPCMemWriteJournal fn, void* user);
+ 
+ bool cpu_init(CPUState* cpu);
++void cpu_set_flat_vm(u8* host, u32 base, u32 size); // back an MMU-mapped window with flat memory
+ bool cpu_alloc_mem2(CPUState* cpu, u32 size); //mem 2 only exists after first aloc
+ void cpu_free(CPUState* cpu);
+ void cpu_reset(CPUState* cpu);

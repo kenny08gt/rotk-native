@@ -1,0 +1,50 @@
+# ---- Game data: never commit. Everyone builds from their own disc. ----
+*.iso
+*.gcm
+*.nkit*
+*.rvz
+*.ciso
+*.gcz
+*.wbfs
+*.dol
+*.bnr
+*.raw
+extracted/
+dol_strings.txt
+# Screenshots of the game are the game's artwork; kept locally only.
+docs/screens/
+
+# Recompiled game code and everything compiled from it
+recomp/out/
+recomp/obj/
+recomp/build/
+recomp/dist/
+recomp/rotk_boot
+recomp/chassis/*.o
+recomp/pgo/*.profraw
+recomp/tools/winid
+
+# Decompiler output (derived from the game's code)
+decomp/c/
+decomp/code.s
+decomp/ghidra/
+decomp/build/
+decomp/*.log
+
+# Third-party tools (download them yourself, see NOTES.md)
+tools/ghidra_[0-9]*/
+tools/dtk
+tools/gcloader.zip
+tools/gcsrc/
+third_party/dolphin-ref/
+
+# Run logs and captures
+recomp/runs/
+recomp/*.log
+recomp/*.err
+recomp/have.txt
+recomp/need.txt
+
+.DS_Store
+__pycache__/
+recomp/build.sh
