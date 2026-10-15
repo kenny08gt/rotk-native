@@ -23,6 +23,7 @@ void VISetWindowTitle(const char* title);
 void VISetWindowFullscreen(bool fullscreen);
 bool VIGetWindowFullscreen(void);
 void AuroraSetViewportPolicy(int policy);   // 0 = fit (keep aspect), 1 = stretch
+void AuroraGetRenderSize(uint32_t* width, uint32_t* height);
 
 static int g_frame_active;
 static atomic_int g_exit;
@@ -110,9 +111,11 @@ static void aurora_frame(void) {
             const AuroraStats* st = aurora_get_stats();
             unsigned long long t[4];
             aurora_gx_texture_debug(t);
-            fprintf(stderr, "frame %llu: draws=%u merged=%u verts=%u textures_up=%u | tex resolved=%llu no_data=%llu "
-                    "palette_no_tlut=%llu null=%llu\n", g_frames, st->drawCallCount, st->mergedDrawCallCount,
-                    st->lastVertSize, st->lastTextureUploadSize, t[0], t[1], t[2], t[3]);
+            uint32_t rw, rh;
+            AuroraGetRenderSize(&rw, &rh);
+            fprintf(stderr, "frame %llu: render %ux%u draws=%u merged=%u verts=%u textures_up=%u | tex resolved=%llu "
+                    "no_data=%llu palette_no_tlut=%llu null=%llu\n", g_frames, rw, rh, st->drawCallCount,
+                    st->mergedDrawCallCount, st->lastVertSize, st->lastTextureUploadSize, t[0], t[1], t[2], t[3]);
         }
     }
     // FULLSCREEN=1: switch once the window is on screen (macOS ignores it on a still-hidden window).
