@@ -481,14 +481,17 @@ static int emu_main(int argc, char** argv) {
             }
             // PERF_LOG=1: every 10 s, how fast the guest could have run in that window without pacing.
             static double mark_wall, mark_guest, mark_slept;
+            static u64 mark_frames;
             static int perf_log = -1;
             if (perf_log < 0) perf_log = getenv("PERF_LOG") != NULL;
             if (perf_log && now - mark_wall >= 10) {
                 double g = cpu.timebase / 40500000.0;
-                printf("perf %5.0fs: capacity %.0f%% of real time\n", now,
-                       100.0 * (g - mark_guest) / (now - mark_wall - (slept - mark_slept)));
+                u64 frames = use_gpu ? gpu_frames_presented() : 0;
+                printf("perf %5.0fs: capacity %.0f%% of real time, %.1f fps\n", now,
+                       100.0 * (g - mark_guest) / (now - mark_wall - (slept - mark_slept)),
+                       (frames - mark_frames) / (now - mark_wall));
                 fflush(stdout);
-                mark_wall = now, mark_guest = g, mark_slept = slept;
+                mark_wall = now, mark_guest = g, mark_slept = slept, mark_frames = frames;
             }
         }
         if (use_gpu && gpu_should_exit()) { why = "window closed"; break; }
