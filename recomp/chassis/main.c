@@ -11,6 +11,9 @@
 #include "gpu.h"
 #include "hw.h"
 #include "hle.h"
+#include "input.h"
+#include <libproc.h>
+#include <unistd.h>
 
 u8* g_fast_vm;   // see fast_cpu.h
 u32 g_fast_vm_base, g_fast_vm_size;
@@ -23,6 +26,47 @@ u32 g_fast_vm_base, g_fast_vm_size;
 #define EXC_COLD_ENTRY 0xC01Du
 static int g_running_c;
 #endif
+
+static CPUState* g_clock_cpu;
+static double guest_seconds(void) { return g_clock_cpu->timebase / 40500000.0; }
+
+// BENCH_WINDOW=start,end (guest seconds): host work spent between the two guest times, then stop.
+// Instructions come from the process (run with NO_GPU=1 so that is mostly this thread). The RAM
+// hash checks that two builds computed the same game state.
+static void bench_window(CPUState* cpu, int* stop) {
+    static double start = -1, end;
+    static int state;   // 0 waiting, 1 measuring, 2 done
+    static u64 insns0, cyc0;
+    static double cpu0;
+    if (start < 0) {
+        const char* w = getenv("BENCH_WINDOW");
+        if (!w || sscanf(w, "%lf,%lf", &start, &end) != 2) { start = 0; state = 2; }
+    }
+    if (state == 2) return;
+    double g = guest_seconds();
+    struct rusage_info_v4 ri;
+    if (state == 0 && g >= start) {
+        proc_pid_rusage(getpid(), RUSAGE_INFO_V4, (rusage_info_t*)&ri);
+        insns0 = ri.ri_instructions, cyc0 = ri.ri_cycles;
+        cpu0 = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) / 1e9;
+        state = 1;
+    } else if (state == 1 && g >= end) {
+        proc_pid_rusage(getpid(), RUSAGE_INFO_V4, (rusage_info_t*)&ri);
+        double secs = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) / 1e9 - cpu0;
+        u64 hash = 1469598103934665603ull;
+        for (u32 i = 0; i < cpu->ram_size; i++) hash = (hash ^ cpu->ram[i]) * 1099511628211ull;
+        printf("bench window %.0f-%.0f s: %.3f G host instructions (%.1f M per guest second), %.3f G cycles, "
+               "game thread %.2f s CPU (%.0f%% of real time), RAM hash %016llX\n",
+               start, end, (ri.ri_instructions - insns0) / 1e9, (ri.ri_instructions - insns0) / 1e6 / (end - start),
+               (ri.ri_cycles - cyc0) / 1e9, secs, 100.0 * (end - start) / secs, hash);
+        if (getenv("BENCH_DUMP")) {   // guest RAM at the window end, to diff two builds
+            FILE* f = fopen(getenv("BENCH_DUMP"), "wb");
+            if (f) { fwrite(cpu->ram, 1, cpu->ram_size, f); fclose(f); }
+        }
+        state = 2;
+        *stop = 1;
+    }
+}
 
 static double wall_seconds(void) {
     struct timespec ts;
@@ -433,6 +477,8 @@ static int emu_main(int argc, char** argv) {
     if (getenv("ROTK_CPU_CLOCK") && atof(getenv("ROTK_CPU_CLOCK")) >= 0.5)
         cpu_oc_div = (u64)(12 * atof(getenv("ROTK_CPU_CLOCK")) + 0.5);
     hle_init(chunk_for);
+    g_clock_cpu = &cpu;
+    input_set_clock(guest_seconds);
     const char* why = "dispatch limit";
     for (; steps < limit; steps++) {
         // RealMode() rfi's to a physical address; run it from the cached mirror.
@@ -524,6 +570,9 @@ static int emu_main(int argc, char** argv) {
         if ((steps & 0xFFF) == 0) {
             double now = wall_seconds() - t0;
             if (now > max_seconds) { why = "time limit"; break; }
+            int bench_stop = 0;
+            bench_window(&cpu, &bench_stop);
+            if (bench_stop) { why = "bench window end"; break; }
             double ahead = cpu.timebase / 40500000.0 - now;
             if (throttle && ahead > 0.002) {
                 struct timespec ts = {0, (long)(ahead * 1e9)};

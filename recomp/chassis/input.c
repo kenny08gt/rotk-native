@@ -16,16 +16,19 @@ enum {
 };
 
 static SDL_Gamepad* g_pad;
+static double (*g_clock)(void);
+
+void input_set_clock(double (*now)(void)) { g_clock = now; }
 
 // Scripted presses for unattended testing: AUTOPRESS="A@6,START@9.5" holds a button for 0.25 s
-// at the given number of seconds since the first poll.
+// at the given second (guest time with input_set_clock, else since the first poll).
 static u16 autopress(void) {
     static const char* spec;
     static Uint64 t0;
     if (!spec && !(spec = SDL_getenv("AUTOPRESS"))) spec = "";
     if (!*spec) return 0;
-    if (!t0) t0 = SDL_GetTicks();
-    double now = (SDL_GetTicks() - t0) / 1000.0;
+    if (!g_clock && !t0) t0 = SDL_GetTicks();
+    double now = g_clock ? g_clock() : (SDL_GetTicks() - t0) / 1000.0;
     static const struct { const char* name; u16 bit; } names[] = {
         {"A", BTN_A}, {"B", BTN_B}, {"X", BTN_X}, {"Y", BTN_Y}, {"START", BTN_START}, {"Z", BTN_Z},
         {"UP", BTN_UP}, {"DOWN", BTN_DOWN}, {"LEFT", BTN_LEFT}, {"RIGHT", BTN_RIGHT}, {"L", BTN_L}, {"R", BTN_R},
@@ -72,7 +75,7 @@ int input_poll(u32 port, u8 out[8]) {
     if (port != 0) return 0;
     static u8 cached[8];
     static Uint64 cached_at;
-    Uint64 now = SDL_GetTicksNS();
+    Uint64 now = g_clock ? (Uint64)(g_clock() * 1e9) : SDL_GetTicksNS();
     if (!cached_at || now - cached_at >= 1000000) {
         read_pad(cached);
         cached_at = now;
