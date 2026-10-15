@@ -27,28 +27,28 @@ The game plays from boot to gameplay, with sound:
   fullscreen uses the display's own resolution. Effects that copy the screen are scaled too.
 - The picture keeps the 4:3 shape at any window size, with fullscreen, anisotropic filtering and
   optional MSAA.
-- Menus, movies and lighter gameplay run at full speed and 60 fps. The biggest fights run at
-  64-91% of full speed and 38-52 fps. See [Performance](#performance).
+- Menus, movies and gameplay run at or near full speed and 60 fps; the biggest fights can dip to
+  about 53 fps when the Mac is busy. See [Performance](#performance).
 
 Only the first levels are tested so far. Expect bugs further into the game. Please open an issue if
 you find one.
 
 ## Performance
 
-Measured on an M1 Max (macOS 27) with default settings, over a 7-minute session: boot, logos, the
-intro movie, then about three minutes of Helm's Deep combat. Screenshots every 10 seconds confirm
-which part of the game each number comes from.
+Measured on an M1 Max (macOS 27) with default settings: boot, logos, the intro movie, then Helm's
+Deep combat (`recomp/bench.sh`). Ranges cover several runs; other programs running on the Mac move
+these numbers by 10% or more.
 
 | Part of the game | Frame rate | Speed (100% = a real GameCube) |
 |---|---|---|
 | Logos, menus, intro movie | **58-60 fps** | 100%, with up to 100% spare capacity |
-| Helm's Deep, the first big fight | **38-52 fps** | **64-91%**: the Mac can't keep up yet |
+| Helm's Deep, the first big fight | **53-60 fps** | **90-106%** |
 | Helm's Deep, later in the level | **58-60 fps** | 96-100% |
-| Whole session | 21,435 frames in 420 s | 93% on average |
 
 The frame rate in the big fight is limited by the speed of the recompiled game code on the Mac's
-CPU, not by the GPU. The game measures its own frame time and scales movement by it, so when it
-falls behind it shows fewer frames rather than running in slow motion.
+CPU, not by the GPU; on a busy Mac it can still drop below 60. The game measures its own frame
+time and scales movement by it, so when it falls behind it shows fewer frames rather than running
+in slow motion.
 
 `ROTK_CPU_CLOCK=2` (experimental) makes the guest CPU twice as fast as a GameCube's, like Dolphin's
 overclock. It does not help in the big fight yet, because the CPU is already the limit there.
@@ -61,7 +61,8 @@ Heavy combat ran at 47% of real time in the first playable build:
 |---|---|
 | First playable build | 47% |
 | Inline fast paths for guest memory and floating point (`chassis/fast_cpu.h`) | 57% |
-| GX command processing on its own GPU thread, `-O3 -mcpu=apple-m1`, profile-guided optimization, no-op host versions of the cache-flush routines, guest memory accesses that the compiler can prove don't alias the register file | 64-100%, depending on the scene |
+| GX command processing on its own GPU thread, `-O3 -mcpu=apple-m1`, profile-guided optimization, no-op host versions of the cache-flush routines, guest memory accesses that the compiler can prove don't alias the register file | 64-91% in the first big fight |
+| The SDK's virtual-memory window on the inline fast path, cached controller input, exact native versions of the lighting and skinning loops (`chassis/hle.c`), a cheaper GX FIFO check, interactive priority for the game thread | 90-106% |
 
 Most of the remaining time is in the game's paired-single (SIMD) vertex skinning. DolRecomp's C
 backend keeps every guest register in memory, which costs about 25-30 host instructions per guest

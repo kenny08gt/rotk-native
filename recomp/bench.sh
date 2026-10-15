@@ -1,7 +1,7 @@
 #!/bin/sh
 # Play from boot into the first big Helm's Deep fight with scripted presses and report the
 # average speed and frame rate during the fight.
-# usage: ./bench.sh <label> [seconds=330]   (extra settings come from the environment)
+# usage: ./bench.sh <label> [seconds=330]   (settings come from the environment; ROTK_BIN picks the binary)
 # Prints: <label> fight cpu <c>% speed <x>% fps <y> (window 250 s to the end); the full PERF_LOG is in runs/bench/<label>.log.
 set -u
 cd "$(dirname "$0")"
@@ -15,7 +15,7 @@ log=runs/bench/$label.log
 echo "load before: $(uptime)" > "$log"
 # /usr/bin/time -l adds "instructions retired" to the .err file: host instructions per guest cycle
 # is the comparison that holds up when other programs load the Mac.
-AUTOPRESS="${P#,}" PERF_LOG=1 MEMCARD=none /usr/bin/time -l ./build/rotk ../extracted/sys "$ISO" \
+AUTOPRESS="${P#,}" PERF_LOG=1 MEMCARD=none /usr/bin/time -l "${ROTK_BIN:-./build/rotk}" ../extracted/sys "$ISO" \
   ../decomp/symbols_final.tsv 40000000000 "$secs" >> "$log" 2> "runs/bench/$label.err"
 echo "load after: $(uptime)" >> "$log"
 insns=$(awk '/instructions retired/ {print $1}' "runs/bench/$label.err")

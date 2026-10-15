@@ -1,0 +1,222 @@
+--- a/src/cpu/cpu.c
++++ b/src/cpu/cpu.c
+@@ -1222,7 +1222,7 @@
+     return result;
+ }
+ 
+-bool ppc_fma(CPUState* cpu, f64 a, f64 c, f64 b, bool single,
++bool ppc_fma_exact(CPUState* cpu, f64 a, f64 c, f64 b, bool single,
+              bool subtract, bool negative, f64* output) {
+     f64 addend = subtract ? -b : b;
+     f64 result;
+@@ -1335,7 +1335,7 @@
+     return true;
+ }
+ 
+-void ppc_fcmp(CPUState* cpu, u8 crfd, f64 a, f64 b, bool ordered) {
++void ppc_fcmp_exact(CPUState* cpu, u8 crfd, f64 a, f64 b, bool ordered) {
+     u32 compare;
+     if (isnan(a) || isnan(b)) {
+         compare = 1u;
+@@ -1500,39 +1500,39 @@
+     set_fprf(cpu, classify_f64(cpu->fpr[d]));
+ }
+ 
+-void ppc_fadds(CPUState* cpu, u8 d, u8 a, u8 b) {
++void ppc_fadds_exact(CPUState* cpu, u8 d, u8 a, u8 b) {
+     binary_single(cpu, d, cpu->fpr[a], cpu->fpr[b], FP_ADD);
+ }
+ 
+-void ppc_fsubs(CPUState* cpu, u8 d, u8 a, u8 b) {
++void ppc_fsubs_exact(CPUState* cpu, u8 d, u8 a, u8 b) {
+     binary_single(cpu, d, cpu->fpr[a], cpu->fpr[b], FP_SUB);
+ }
+ 
+-void ppc_fmuls(CPUState* cpu, u8 d, u8 a, u8 c) {
++void ppc_fmuls_exact(CPUState* cpu, u8 d, u8 a, u8 c) {
+     binary_single(cpu, d, cpu->fpr[a], force_25_bit(cpu->fpr[c]), FP_MUL);
+ }
+ 
+-void ppc_fdivs(CPUState* cpu, u8 d, u8 a, u8 b) {
++void ppc_fdivs_exact(CPUState* cpu, u8 d, u8 a, u8 b) {
+     binary_single(cpu, d, cpu->fpr[a], cpu->fpr[b], FP_DIV);
+ }
+ 
+-void ppc_fadd(CPUState* cpu, u8 d, u8 a, u8 b) {
++void ppc_fadd_exact(CPUState* cpu, u8 d, u8 a, u8 b) {
+     binary_double(cpu, d, cpu->fpr[a], cpu->fpr[b], FP_ADD);
+ }
+ 
+-void ppc_fsub(CPUState* cpu, u8 d, u8 a, u8 b) {
++void ppc_fsub_exact(CPUState* cpu, u8 d, u8 a, u8 b) {
+     binary_double(cpu, d, cpu->fpr[a], cpu->fpr[b], FP_SUB);
+ }
+ 
+-void ppc_fmul(CPUState* cpu, u8 d, u8 a, u8 c) {
++void ppc_fmul_exact(CPUState* cpu, u8 d, u8 a, u8 c) {
+     binary_double(cpu, d, cpu->fpr[a], cpu->fpr[c], FP_MUL);
+ }
+ 
+-void ppc_fdiv(CPUState* cpu, u8 d, u8 a, u8 b) {
++void ppc_fdiv_exact(CPUState* cpu, u8 d, u8 a, u8 b) {
+     binary_double(cpu, d, cpu->fpr[a], cpu->fpr[b], FP_DIV);
+ }
+ 
+-void ppc_frsp(CPUState* cpu, u8 d, u8 b) {
++void ppc_frsp_exact(CPUState* cpu, u8 d, u8 b) {
+     f64 value = cpu->fpr[b];
+     f32 rounded = force_single(cpu, value);
+     if (isnan(value)) {
+@@ -1576,7 +1576,7 @@
+     return result;
+ }
+ 
+-void ppc_ps_add_op(CPUState* cpu, u8 d, u8 a, u8 b) {
++void ppc_ps_add_op_exact(CPUState* cpu, u8 d, u8 a, u8 b) {
+     write_paired_result(cpu, d,
+                         paired_binary_nan(cpu->fpr[a], cpu->fpr[b],
+                                           cpu->fpr[a] + cpu->fpr[b]),
+@@ -1584,7 +1584,7 @@
+                                           cpu->ps1[a] + cpu->ps1[b]));
+ }
+ 
+-void ppc_ps_sub_op(CPUState* cpu, u8 d, u8 a, u8 b) {
++void ppc_ps_sub_op_exact(CPUState* cpu, u8 d, u8 a, u8 b) {
+     write_paired_result(cpu, d,
+                         paired_binary_nan(cpu->fpr[a], cpu->fpr[b],
+                                           cpu->fpr[a] - cpu->fpr[b]),
+@@ -1592,7 +1592,7 @@
+                                           cpu->ps1[a] - cpu->ps1[b]));
+ }
+ 
+-void ppc_ps_mul_op(CPUState* cpu, u8 d, u8 a, u8 c) {
++void ppc_ps_mul_op_exact(CPUState* cpu, u8 d, u8 a, u8 c) {
+     f64 c0 = force_25_bit(cpu->fpr[c]);
+     f64 c1 = force_25_bit(cpu->ps1[c]);
+     write_paired_result(cpu, d,
+@@ -1610,7 +1610,7 @@
+                                           cpu->ps1[a] / cpu->ps1[b]));
+ }
+ 
+-void ppc_ps_madd_op(CPUState* cpu, u8 d, u8 a, u8 c, u8 b,
++void ppc_ps_madd_op_exact(CPUState* cpu, u8 d, u8 a, u8 c, u8 b,
+                     bool subtract, bool negative) {
+     f64 ps0 = single_fma_value(
+         cpu, cpu->fpr[a], cpu->fpr[c],
+@@ -1631,7 +1631,7 @@
+     write_paired_result(cpu, d, ps0, ps1);
+ }
+ 
+-void ppc_ps_madds0(CPUState* cpu, u8 d, u8 a, u8 c, u8 b) {
++void ppc_ps_madds0_exact(CPUState* cpu, u8 d, u8 a, u8 c, u8 b) {
+     f64 ps0 = single_fma_value(cpu, cpu->fpr[a], cpu->fpr[c], cpu->fpr[b]);
+     f64 ps1 = single_fma_value(cpu, cpu->ps1[a], cpu->fpr[c], cpu->ps1[b]);
+     write_paired_result(
+@@ -1639,7 +1639,7 @@
+         paired_fma_nan(cpu->ps1[a], cpu->ps1[b], cpu->fpr[c], ps1));
+ }
+ 
+-void ppc_ps_madds1(CPUState* cpu, u8 d, u8 a, u8 c, u8 b) {
++void ppc_ps_madds1_exact(CPUState* cpu, u8 d, u8 a, u8 c, u8 b) {
+     f64 ps0 = single_fma_value(cpu, cpu->fpr[a], cpu->ps1[c], cpu->fpr[b]);
+     f64 ps1 = single_fma_value(cpu, cpu->ps1[a], cpu->ps1[c], cpu->ps1[b]);
+     write_paired_result(
+@@ -1647,7 +1647,7 @@
+         paired_fma_nan(cpu->ps1[a], cpu->ps1[b], cpu->ps1[c], ps1));
+ }
+ 
+-void ppc_ps_sum0(CPUState* cpu, u8 d, u8 a, u8 c, u8 b) {
++void ppc_ps_sum0_exact(CPUState* cpu, u8 d, u8 a, u8 c, u8 b) {
+     write_paired_result(
+         cpu, d,
+         paired_binary_nan(cpu->fpr[a], cpu->ps1[b],
+@@ -1655,14 +1655,14 @@
+         cpu->ps1[c]);
+ }
+ 
+-void ppc_ps_sum1(CPUState* cpu, u8 d, u8 a, u8 c, u8 b) {
++void ppc_ps_sum1_exact(CPUState* cpu, u8 d, u8 a, u8 c, u8 b) {
+     write_paired_result(
+         cpu, d, cpu->fpr[c],
+         paired_binary_nan(cpu->fpr[a], cpu->ps1[b],
+                           cpu->fpr[a] + cpu->ps1[b]));
+ }
+ 
+-void ppc_ps_muls0(CPUState* cpu, u8 d, u8 a, u8 c) {
++void ppc_ps_muls0_exact(CPUState* cpu, u8 d, u8 a, u8 c) {
+     f64 scalar = force_25_bit(cpu->fpr[c]);
+     write_paired_result(
+         cpu, d,
+@@ -1670,7 +1670,7 @@
+         paired_binary_nan(cpu->ps1[a], cpu->fpr[c], cpu->ps1[a] * scalar));
+ }
+ 
+-void ppc_ps_muls1(CPUState* cpu, u8 d, u8 a, u8 c) {
++void ppc_ps_muls1_exact(CPUState* cpu, u8 d, u8 a, u8 c) {
+     f64 scalar = force_25_bit(cpu->ps1[c]);
+     write_paired_result(
+         cpu, d,
+@@ -1700,3 +1700,32 @@
+     cpu->cr = (cpu->cr & 0x0FFFFFFFu) |
+               ((success ? 2u : 0u) | so) << 28;
+ }
++
++/* The public FP / paired-single helpers forward to the *_exact versions through weak
++   definitions, so a host may replace them with strong ones that add fast paths (and call
++   the *_exact versions for everything else). */
++__attribute__((weak)) void ppc_fadds(CPUState* cpu, u8 d, u8 a, u8 b) { ppc_fadds_exact(cpu, d, a, b); }
++__attribute__((weak)) void ppc_fsubs(CPUState* cpu, u8 d, u8 a, u8 b) { ppc_fsubs_exact(cpu, d, a, b); }
++__attribute__((weak)) void ppc_fmuls(CPUState* cpu, u8 d, u8 a, u8 b) { ppc_fmuls_exact(cpu, d, a, b); }
++__attribute__((weak)) void ppc_fdivs(CPUState* cpu, u8 d, u8 a, u8 b) { ppc_fdivs_exact(cpu, d, a, b); }
++__attribute__((weak)) void ppc_fadd(CPUState* cpu, u8 d, u8 a, u8 b) { ppc_fadd_exact(cpu, d, a, b); }
++__attribute__((weak)) void ppc_fsub(CPUState* cpu, u8 d, u8 a, u8 b) { ppc_fsub_exact(cpu, d, a, b); }
++__attribute__((weak)) void ppc_fmul(CPUState* cpu, u8 d, u8 a, u8 b) { ppc_fmul_exact(cpu, d, a, b); }
++__attribute__((weak)) void ppc_fdiv(CPUState* cpu, u8 d, u8 a, u8 b) { ppc_fdiv_exact(cpu, d, a, b); }
++__attribute__((weak)) void ppc_ps_add_op(CPUState* cpu, u8 d, u8 a, u8 b) { ppc_ps_add_op_exact(cpu, d, a, b); }
++__attribute__((weak)) void ppc_ps_sub_op(CPUState* cpu, u8 d, u8 a, u8 b) { ppc_ps_sub_op_exact(cpu, d, a, b); }
++__attribute__((weak)) void ppc_ps_mul_op(CPUState* cpu, u8 d, u8 a, u8 b) { ppc_ps_mul_op_exact(cpu, d, a, b); }
++__attribute__((weak)) void ppc_ps_muls0(CPUState* cpu, u8 d, u8 a, u8 b) { ppc_ps_muls0_exact(cpu, d, a, b); }
++__attribute__((weak)) void ppc_ps_muls1(CPUState* cpu, u8 d, u8 a, u8 b) { ppc_ps_muls1_exact(cpu, d, a, b); }
++__attribute__((weak)) void ppc_ps_madds0(CPUState* cpu, u8 d, u8 a, u8 c, u8 b) { ppc_ps_madds0_exact(cpu, d, a, c, b); }
++__attribute__((weak)) void ppc_ps_madds1(CPUState* cpu, u8 d, u8 a, u8 c, u8 b) { ppc_ps_madds1_exact(cpu, d, a, c, b); }
++__attribute__((weak)) void ppc_ps_sum0(CPUState* cpu, u8 d, u8 a, u8 c, u8 b) { ppc_ps_sum0_exact(cpu, d, a, c, b); }
++__attribute__((weak)) void ppc_ps_sum1(CPUState* cpu, u8 d, u8 a, u8 c, u8 b) { ppc_ps_sum1_exact(cpu, d, a, c, b); }
++__attribute__((weak)) void ppc_frsp(CPUState* cpu, u8 d, u8 b) { ppc_frsp_exact(cpu, d, b); }
++__attribute__((weak)) void ppc_fcmp(CPUState* cpu, u8 crfd, f64 a, f64 b, bool ordered) { ppc_fcmp_exact(cpu, crfd, a, b, ordered); }
++__attribute__((weak)) bool ppc_fma(CPUState* cpu, f64 a, f64 c, f64 b, bool single, bool subtract, bool negative, f64* output) {
++    return ppc_fma_exact(cpu, a, c, b, single, subtract, negative, output);
++}
++__attribute__((weak)) void ppc_ps_madd_op(CPUState* cpu, u8 d, u8 a, u8 c, u8 b, bool subtract, bool negative) {
++    ppc_ps_madd_op_exact(cpu, d, a, c, b, subtract, negative);
++}
+--- a/src/cpu/cpu.h
++++ b/src/cpu/cpu.h
+@@ -192,6 +192,28 @@
+         return true;
+     return ppc_fp_available(cpu, cia);
+ }
++/* Exact implementations behind the weak public helpers above (see cpu.c). */
++void ppc_fadds_exact(CPUState* cpu, u8 d, u8 a, u8 b);
++void ppc_fsubs_exact(CPUState* cpu, u8 d, u8 a, u8 b);
++void ppc_fmuls_exact(CPUState* cpu, u8 d, u8 a, u8 b);
++void ppc_fdivs_exact(CPUState* cpu, u8 d, u8 a, u8 b);
++void ppc_fadd_exact(CPUState* cpu, u8 d, u8 a, u8 b);
++void ppc_fsub_exact(CPUState* cpu, u8 d, u8 a, u8 b);
++void ppc_fmul_exact(CPUState* cpu, u8 d, u8 a, u8 b);
++void ppc_fdiv_exact(CPUState* cpu, u8 d, u8 a, u8 b);
++void ppc_ps_add_op_exact(CPUState* cpu, u8 d, u8 a, u8 b);
++void ppc_ps_sub_op_exact(CPUState* cpu, u8 d, u8 a, u8 b);
++void ppc_ps_mul_op_exact(CPUState* cpu, u8 d, u8 a, u8 b);
++void ppc_ps_muls0_exact(CPUState* cpu, u8 d, u8 a, u8 b);
++void ppc_ps_muls1_exact(CPUState* cpu, u8 d, u8 a, u8 b);
++void ppc_ps_madds0_exact(CPUState* cpu, u8 d, u8 a, u8 c, u8 b);
++void ppc_ps_madds1_exact(CPUState* cpu, u8 d, u8 a, u8 c, u8 b);
++void ppc_ps_sum0_exact(CPUState* cpu, u8 d, u8 a, u8 c, u8 b);
++void ppc_ps_sum1_exact(CPUState* cpu, u8 d, u8 a, u8 c, u8 b);
++void ppc_frsp_exact(CPUState* cpu, u8 d, u8 b);
++void ppc_fcmp_exact(CPUState* cpu, u8 crfd, f64 a, f64 b, bool ordered);
++bool ppc_fma_exact(CPUState* cpu, f64 a, f64 c, f64 b, bool single, bool subtract, bool negative, f64* output);
++void ppc_ps_madd_op_exact(CPUState* cpu, u8 d, u8 a, u8 c, u8 b, bool subtract, bool negative);
+ void ppc_fallback_instruction(CPUState* cpu, u32 raw, u32 cia);
+ bool ppc_host_call(CPUState* cpu, u32 address);
+ bool ppc_native_region_available(CPUState* cpu, u32 start, u32 end);

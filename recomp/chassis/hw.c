@@ -379,7 +379,7 @@ enum { CPCR_READ_EN = 0x01, CPCR_LINK = 0x10 };
 enum { PE_INTSR = 0x100A, PE_FINISH_EN = 0x02, PE_TOKEN_INT = 0x04, PE_FINISH_INT = 0x08, PE_W1C = 0x0C };
 enum { PI_INT_PE_TOKEN = 1u << 9, PI_INT_PE_FINISH = 1u << 10 };
 
-static u8 g_fifo_tail[5];
+static u64 g_fifo_tail;   // the last bytes written while linked, newest in the low byte
 static u64 g_fifo_bytes, g_draw_dones, g_gpu_bytes, g_dl_bytes;
 static hw_gpu_sink g_gpu_sink;
 
@@ -444,10 +444,8 @@ static void fifo_byte(u8 b) {
         return;
     }
 
-    memmove(g_fifo_tail, g_fifo_tail + 1, 4);
-    g_fifo_tail[4] = b;
-    static const u8 draw_done[5] = {0x61, 0x45, 0x00, 0x00, 0x02};
-    if (!memcmp(g_fifo_tail, draw_done, 5)) {
+    g_fifo_tail = g_fifo_tail << 8 | b;
+    if ((g_fifo_tail & 0xFFFFFFFFFFull) == 0x6145000002ull) {   // BP 0x45 = 2: draw done
         gpu_drain();
         g_draw_dones++;
         g_draw_done_ticket = g_frame_hook ? g_frame_hook() : 0;
@@ -498,8 +496,23 @@ static u64 slice32(u32 value, u32 base, u32 off, u8 size) {
     return size >= 4 ? value : (value >> shift) & ((1u << (8 * size)) - 1);
 }
 
+// The SDK's virtual-memory window (flat host memory, see main.c). The C backend's helpers reach it
+// through cpu_set_flat_vm; the LLVM backend's inline memory path only knows RAM and lands here.
+extern u8* g_fast_vm;
+extern u32 g_fast_vm_base, g_fast_vm_size;
+static u8* vm_ptr(u32 ea, u8 size) {
+    u32 off = ea - g_fast_vm_base;
+    return g_fast_vm && off <= g_fast_vm_size - size ? g_fast_vm + off : NULL;
+}
+
 static u64 ext_read(CPUState* cpu, u32 ea, u8 size) {
     (void)cpu;
+    u8* vm = vm_ptr(ea, size);
+    if (vm) {
+        u64 v = 0;
+        for (u8 i = 0; i < size; i++) v = v << 8 | vm[i];
+        return v;
+    }
     if ((ea & 0xFFFF0000u) != 0xCC000000u) {
         static u32 logged;
         if (getenv("UNMAPPED_LOG") && logged++ < 20) fprintf(stderr, "unmapped read %08X size %u pc %08X\n", ea, size, cpu->pc);
@@ -551,6 +564,11 @@ static u64 ext_read(CPUState* cpu, u32 ea, u8 size) {
 
 static void ext_write(CPUState* cpu, u32 ea, u64 v, u8 size) {
     (void)cpu;
+    u8* vm = vm_ptr(ea, size);
+    if (vm) {
+        for (int i = size - 1; i >= 0; i--, v >>= 8) vm[i] = (u8)v;
+        return;
+    }
     if ((ea & 0xFFFFF000u) == 0xCC008000u) {   // write-gather pipe
         for (int i = size - 1; i >= 0; i--) fifo_byte((u8)(v >> (8 * i)));
         return;

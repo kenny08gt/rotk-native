@@ -16,6 +16,13 @@ u8* g_fast_vm;   // see fast_cpu.h
 u32 g_fast_vm_base, g_fast_vm_size;
 
 #include "chunks.inc"
+#ifdef ROTK_LLVM
+// LLVM backend: entries it cannot take (a pc that is not a region leader) run the C backend's
+// code instead. The fallback hook flags them with this pseudo-exception.
+#include "cchunks.inc"
+#define EXC_COLD_ENTRY 0xC01Du
+static int g_running_c;
+#endif
 
 static double wall_seconds(void) {
     struct timespec ts;
@@ -147,6 +154,13 @@ static void fallback(CPUState* cpu, u32 raw, u32 cia) {
     } else if (op == 31 && (xo == 86 || xo == 54 || xo == 470 || xo == 982 || xo == 246 || xo == 278)) {
         // dcbf, dcbst, dcbi, icbi, dcbtst, dcbt: caches are coherent on the host
     } else {
+#ifdef ROTK_LLVM
+        if (!g_running_c) {   // the LLVM code was entered where it cannot run: hand over to the C code
+            cpu->pc = cia;
+            cpu->exception = EXC_COLD_ENTRY;
+            return;
+        }
+#endif
         static u32 count;
         if (count++ < 16) fprintf(stderr, "unhandled fallback instruction 0x%08X at 0x%08X\n", raw, cia);
     }
@@ -333,15 +347,18 @@ static s64 hle_cache_range(CPUState* c) {
     return 8 + 3 * (s64)n;
 }
 
-static void (*chunk_for(u32 pc))(CPUState*) {
-    size_t lo = 0, hi = NCHUNKS;
+typedef void (*ChunkFn)(CPUState*);
+static ChunkFn chunk_in(const void* table, size_t n, u32 pc) {
+    const struct { u32 base; ChunkFn fn; }* t = table;
+    size_t lo = 0, hi = n;
     while (lo < hi) {
         size_t mid = (lo + hi) / 2;
-        if (kChunks[mid].base <= pc) lo = mid + 1; else hi = mid;
+        if (t[mid].base <= pc) lo = mid + 1; else hi = mid;
     }
     if (lo == 0 || pc >= 0x8016F580u) return NULL;
-    return kChunks[lo - 1].fn;
+    return t[lo - 1].fn;
 }
+static ChunkFn chunk_for(u32 pc) { return chunk_in(kChunks, NCHUNKS, pc); }
 
 // usage: rotk <disc.iso>                     play (boot files come from the disc)
 //        rotk <sys dir|disc> <disc.iso> <symbols.tsv> [max_dispatches] [max_seconds]   test runs
@@ -471,6 +488,21 @@ static int emu_main(int argc, char** argv) {
         u64 fn_t0 = hist_slot >= 0 ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0;
         cpu.downcount = 4096;
         fn(&cpu);
+#ifdef ROTK_LLVM
+        if (cpu.exception == EXC_COLD_ENTRY) {
+            static u64 cold_entries;
+            cold_entries++;
+            if (getenv("COLD_LOG") && cold_entries < 40) fprintf(stderr, "cold entry at %08X\n", cpu.pc);
+            cpu.exception = 0;
+            void (*cfn)(CPUState*) = chunk_in(kCChunks, sizeof kCChunks / sizeof kCChunks[0], cpu.pc);
+            if (cfn) {
+                g_running_c = 1;
+                g_hle_skip = cpu.pc;
+                cfn(&cpu);
+                g_running_c = 0;
+            }
+        }
+#endif
         // Timebase ticks at bus/4 = CPU/12; charge the cycles this dispatch consumed.
         used = 4096 - cpu.downcount;
         if (used < 1) used = 1;

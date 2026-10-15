@@ -16,8 +16,10 @@ docs/screens/
 
 # Recompiled game code and everything compiled from it
 recomp/out/
+recomp/out-llvm/
 recomp/obj/
 recomp/build/
+recomp/build-llvm/
 recomp/dist/
 recomp/rotk_boot
 recomp/chassis/*.o

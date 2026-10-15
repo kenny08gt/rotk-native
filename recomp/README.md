@@ -46,6 +46,23 @@ Options: `ROTK_FAST_CPU` (inline memory/FP fast paths, `chassis/fast_cpu.h`, def
 `xcrun llvm-profdata merge -o pgo/rotk.profdata pgo/*.profraw`), `ROTK_TRACE_HOOKS` (function-entry
 hooks for `FN_TRACE`, debugging only).
 
+`ROTK_BACKEND=llvm` (experimental) links DolRecomp's LLVM backend instead of the C chunks. That backend
+promotes guest registers to host registers within each function and calls guest functions directly.
+It needs LLVM 20 (`brew install llvm@20`), a DolRecomp build with `-DDOLRECOMP_ENABLE_LLVM=ON`, and its
+objects in `out-llvm`:
+
+```
+../third_party/dolrecomp/build-llvm/dolrecomp -j10 --backend llvm --runtime recompcore --targets host \
+  --semantics exact --gamecube --cpu gekko --map ../decomp/rotk.map ../extracted/sys/main.dol out-llvm
+cmake -S . -B build-llvm -DCMAKE_BUILD_TYPE=Release -DROTK_BACKEND=llvm && cmake --build build-llvm -j8
+```
+
+The LLVM functions can only be entered at their region leaders; for any other pc the fallback hook
+hands over to the C chunks, which the LLVM build also links (as `cfunc_*`). It runs the game, but
+in the first big fight it executes as many host instructions per guest cycle as the C build:
+every exact floating-point operation is an out-of-line call (`chassis/fast_helpers.c` supplies the
+fast paths), and guest registers are written back around each call.
+
 Third-party trees are patched: `patches/aurora-retail-fifo.patch` (Aurora, MIT) and
 `patches/dolrecomp-flat-vm.patch` (DolRecomp, GPL-3.0). `chassis/ax_hle.cpp` is adapted from Dolphin
 (GPL-2.0+).

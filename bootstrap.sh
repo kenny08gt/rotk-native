@@ -48,6 +48,7 @@ apply_patch() {  # <tree> <patch>: apply once
 }
 apply_patch third_party/aurora recomp/patches/aurora-retail-fifo.patch
 apply_patch third_party/dolrecomp recomp/patches/dolrecomp-flat-vm.patch
+apply_patch third_party/dolrecomp recomp/patches/dolrecomp-fast-fp-helpers.patch
 
 echo "== game code from your disc"
 python3 tools/gcm_extract.py "$ISO" extracted --sys-only
