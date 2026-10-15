@@ -22,6 +22,9 @@ The game plays from boot to gameplay, with sound:
 - Music, sound effects and movie audio work through the GameCube's audio DSP, which is
   reimplemented on the host.
 - Memory card saves go to a file on your Mac. The game formats it the first time.
+- The game renders at your screen's full resolution, not the GameCube's 640x480. The default
+  window on a Retina display renders at 2560x1920, four times the original in each direction, and
+  fullscreen uses the display's own resolution. Effects that copy the screen are scaled too.
 - The picture keeps the 4:3 shape at any window size, with fullscreen, anisotropic filtering and
   optional MSAA.
 - The game runs at full speed in menus, movies and the first level. Some of the heaviest combat
