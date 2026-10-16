@@ -12,6 +12,11 @@ static std::atomic<bool> g_legend{getenv("ROTK_LEGEND") != nullptr};
 static char g_text[48] = "-- fps";
 
 extern "C" int input_pad_type(void);
+extern "C" int cheats_count(void);
+extern "C" const char* cheats_name(int i);
+extern "C" int cheats_enabled(int i);
+extern "C" const char* cheats_problem(int i);
+extern "C" void cheats_toggle(int i);
 
 static ImU32 rgb(int r, int g, int b, int a = 255) { return IM_COL32(r, g, b, a); }
 
@@ -70,6 +75,57 @@ static void face_button(ImDrawList* d, float size, ImVec2 c, float r, SDL_Gamepa
     }
 }
 
+static std::atomic<bool> g_cheat_menu{getenv("ROTK_CHEAT_MENU") != nullptr};
+static std::atomic<int> g_cheat_sel{0};
+
+extern "C" int overlay_cheat_menu_open(void) { return g_cheat_menu; }
+extern "C" void overlay_toggle_cheat_menu(void) { g_cheat_menu = !g_cheat_menu; }
+extern "C" void overlay_cheat_menu_move(int delta) {
+    int n = cheats_count();
+    if (n) g_cheat_sel = ((g_cheat_sel + delta) % n + n) % n;
+}
+extern "C" void overlay_cheat_menu_toggle_selected(void) {
+    if (g_cheat_menu) cheats_toggle(g_cheat_sel);
+}
+
+static void draw_cheat_menu(void) {
+    float fs = ImGui::GetFontSize() * 1.4f, row_h = fs * 1.6f, width = fs * 30;
+    int n = cheats_count(), problems = 0;
+    for (int i = 0; i < n; i++) problems += cheats_problem(i) != nullptr;
+    float height = row_h * (n + 3) + fs * (n ? problems * 1.1f : 3.5f);
+    ImVec2 o(16, 50);
+    ImDrawList* d = ImGui::GetForegroundDrawList();
+    d->AddRectFilled(o, ImVec2(o.x + width, o.y + height), rgb(0, 0, 0, 205), 10);
+    ImU32 dim = rgb(170, 170, 175), fg = rgb(240, 240, 240);
+    float x = o.x + fs, y = o.y + fs * 0.6f;
+    d->AddText(ImGui::GetFont(), fs * 1.15f, ImVec2(x, y), fg, "Cheats");
+    y += row_h * 1.2f;
+    if (!n) {
+        d->AddText(ImGui::GetFont(), fs * 0.9f, ImVec2(x, y), dim, "No cheats yet. Paste Action Replay codes into");
+        y += fs * 1.2f;
+        d->AddText(ImGui::GetFont(), fs * 0.9f, ImVec2(x, y), dim, "~/Library/Application Support/rotk/cheats.txt");
+        y += fs * 1.2f;
+        d->AddText(ImGui::GetFont(), fs * 0.9f, ImVec2(x, y), dim, "and restart the game.");
+        y += row_h;
+    }
+    for (int i = 0; i < n; i++) {
+        bool sel = i == g_cheat_sel, on = cheats_enabled(i);
+        if (sel) d->AddRectFilled(ImVec2(o.x + 6, y - fs * 0.25f), ImVec2(o.x + width - 6, y + fs * 1.25f), rgb(255, 255, 255, 40), 6);
+        ImVec2 box(x, y + fs * 0.1f);
+        d->AddRectFilled(box, ImVec2(box.x + fs * 2.6f, box.y + fs * 0.9f), on ? rgb(45, 184, 76) : rgb(90, 90, 96), fs * 0.45f);
+        text_centered(d, fs * 0.75f, ImVec2(box.x + fs * 1.3f, box.y + fs * 0.45f), rgb(255, 255, 255), on ? "ON" : "OFF");
+        d->AddText(ImGui::GetFont(), fs, ImVec2(x + fs * 3.2f, y), fg, cheats_name(i));
+        y += row_h;
+        if (const char* why = cheats_problem(i)) {
+            d->AddText(ImGui::GetFont(), fs * 0.75f, ImVec2(x + fs * 3.2f, y - fs * 0.45f), rgb(255, 120, 110), why);
+            y += fs * 1.1f;
+        }
+    }
+    d->AddText(ImGui::GetFont(), fs * 0.8f, ImVec2(x, y + fs * 0.2f), dim, "Up/Down choose, Return or Cross toggles");
+    y += fs * 1.1f;
+    d->AddText(ImGui::GetFont(), fs * 0.8f, ImVec2(x, y + fs * 0.2f), dim, "F3, Circle or Create+Triangle closes");
+}
+
 // GameCube button -> this controller's button -> keyboard key, with the GameCube buttons in their own colors.
 static void draw_legend(void) {
     int type = input_pad_type();
@@ -98,7 +154,7 @@ static void draw_legend(void) {
     ImVec2 disp = ImGui::GetIO().DisplaySize;
     ImVec2 o(disp.x - width - 16, 50);
     ImDrawList* d = ImGui::GetForegroundDrawList();
-    float height = row_h * (n + 3.75f) + fs * 0.5f;
+    float height = row_h * (n + 4.5f) + fs * 0.5f;
     d->AddRectFilled(o, ImVec2(o.x + width, o.y + height), rgb(0, 0, 0, 185), 10);
     ImU32 dim = rgb(170, 170, 175), fg = rgb(240, 240, 240);
     float y = o.y + row_h * 0.6f;
@@ -133,6 +189,9 @@ static void draw_legend(void) {
     y += row_h * 0.75f;
     snprintf(line, sizeof line, pad ? "Load checkpoint: F9 or %s+%s" : "Load checkpoint: F9", hold, ps ? "R1" : nin ? "R" : "RB");
     d->AddText(ImGui::GetFont(), fs * 0.9f, ImVec2(o.x + fs, y - fs / 2), fg, line);
+    y += row_h * 0.75f;
+    snprintf(line, sizeof line, pad ? "Cheats: F3 or %s+%s" : "Cheats: F3", hold, ps ? "Triangle" : nin ? "X" : "Y");
+    d->AddText(ImGui::GetFont(), fs * 0.9f, ImVec2(o.x + fs, y - fs / 2), fg, line);
     y += row_h;
     d->AddText(ImGui::GetFont(), fs * 0.9f, ImVec2(o.x + fs, y - fs / 2), dim, pad ? "F2 or tap Create/Back: hide legend" : "F2: hide legend");
 }
@@ -160,6 +219,7 @@ extern "C" void overlay_draw(void) {
     }
     draw_note();
     if (g_legend) draw_legend();
+    if (g_cheat_menu) draw_cheat_menu();
     if (!g_show) return;
     ImDrawList* d = ImGui::GetForegroundDrawList();
     float size = ImGui::GetFontSize() * 1.5f;

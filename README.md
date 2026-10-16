@@ -130,6 +130,7 @@ also works, with rumble.
 |---|---|
 | Frame-rate counter (fps and the slowest frame) | F1 shows or hides it |
 | Controls legend (GameCube buttons on your controller and keyboard) | F2 or tap the controller's Create/View button, or start with `ROTK_LEGEND=1` |
+| Cheat menu | F3, or hold Create/View and press Triangle/Y |
 | Save a checkpoint | F5, or hold Create/View and press L1/LB |
 | Load the checkpoint | F9, or hold Create/View and press R1/RB |
 | Fullscreen | Control-Command-F or Option-Return, or start with `FULLSCREEN=1` |
@@ -152,6 +153,31 @@ A checkpoint is a snapshot of the whole machine, like a Dolphin save state. It g
 There is one checkpoint: saving again replaces it. Loading one does not change the memory card, so
 don't load a checkpoint while the game is saving or loading from the card. A checkpoint only loads in
 the build that made it (a rebuild that changes the saved state's size says "No checkpoint to load").
+
+## Cheats
+
+Action Replay codes go in `~/Library/Application Support/rotk/cheats.txt`. The game creates the file
+with instructions the first time it runs. Put a name line, then the code lines:
+
+```
+[on] Unlimited Health
+XXXX-XXXX-XXXXX
+XXXX-XXXX-XXXXX
+```
+
+`[on]` or `[off]` sets whether the cheat runs. Encrypted codes (`XXXX-XXXX-XXXXX`, as cheat sites list
+them) and decrypted ones (`XXXXXXXX YYYYYYYY`) both work, and Dolphin's `$Name` lines start off. Leave
+out master codes. F3 opens the cheat menu, where Up/Down and Return (or the D-pad and Cross) turn
+cheats on and off; the choice is saved to the file. Restart the game after editing the file. The
+cheats run once per frame, the way Dolphin runs them.
+
+A code that writes data works as is. A code that replaces one of the game's instructions needs a
+patch point, because the game runs recompiled code rather than the instructions in memory. The
+menu then says "needs a patch point". Add the address to `recomp/chassis/cheat_points.inc`, run
+`./bootstrap.sh` again (or `python3 recomp/tools/add_hle_points.py recomp/chassis/cheat_points.inc
+recomp/out/generated/chunks ROTK_CHEAT_POINT` and rebuild). The points for the US Action Replay list's
+Unlimited Health, Unlimited Secondary Weapon and One Shot Kill Enemies are already there.
+Instruction cheats work in the C build (the app), not the LLVM build.
 
 ## Troubleshooting
 

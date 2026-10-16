@@ -138,6 +138,12 @@ static void aurora_frame(void) {
                 VISetWindowFullscreen(!VIGetWindowFullscreen());
             if (e->sdl.key.key == SDLK_F1) overlay_toggle();
             if (e->sdl.key.key == SDLK_F2) overlay_toggle_legend();
+            if (e->sdl.key.key == SDLK_F3) overlay_toggle_cheat_menu();
+            if (overlay_cheat_menu_open()) {
+                if (e->sdl.key.key == SDLK_UP) overlay_cheat_menu_move(-1);
+                if (e->sdl.key.key == SDLK_DOWN) overlay_cheat_menu_move(1);
+                if (e->sdl.key.key == SDLK_RETURN && !(m & SDL_KMOD_ALT)) overlay_cheat_menu_toggle_selected();
+            }
             if (e->sdl.key.key == SDLK_F5) checkpoint_request(CHECKPOINT_SAVE);
             if (e->sdl.key.key == SDLK_F9) checkpoint_request(CHECKPOINT_LOAD);
         }

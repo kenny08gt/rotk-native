@@ -20,3 +20,14 @@ extern unsigned g_hle_points_on, g_hle_skip;
             return;                                           \
         }                                                     \
     } while (0)
+
+// Cheat patch points (chassis/cheat_points.inc, chassis/cheats.c): while a cheat replaces the
+// instruction at `a`, the generated code returns to the dispatcher there to run the replacement.
+extern unsigned g_cheat_points_on;
+#define ROTK_CHEAT_POINT(c, a)                                \
+    do {                                                      \
+        if (g_cheat_points_on && g_hle_skip != (a)) {         \
+            (c)->pc = (a);                                    \
+            return;                                           \
+        }                                                     \
+    } while (0)

@@ -79,6 +79,7 @@ else
   echo "recomp/out is up to date"
 fi
 python3 recomp/tools/add_hle_points.py recomp/chassis/hle_points.txt recomp/out/generated/chunks >/dev/null
+python3 recomp/tools/add_hle_points.py recomp/chassis/cheat_points.inc recomp/out/generated/chunks ROTK_CHEAT_POINT >/dev/null
 
 echo "== native build (the first build fetches Dawn and takes a while)"
 cmake -S recomp -B recomp/build -DCMAKE_BUILD_TYPE=Release -DROTK_PGO="$PGO"

@@ -18,6 +18,7 @@
 #include "ax_hle.h"
 #include "overlay.h"
 #include "savestate.h"
+#include "cheats.h"
 #include <libproc.h>
 #include <unistd.h>
 
@@ -242,6 +243,14 @@ static void watch_journal(u32 offset, u32 size, void* user) {
 }
 
 // ---- boot ----
+static struct { u32 addr, size; } g_text[7];   // the DOL's code sections
+
+static int is_code(u32 addr) {
+    for (int i = 0; i < 7; i++)
+        if (addr - g_text[i].addr < g_text[i].size) return 1;
+    return 0;
+}
+
 static void load_dol(CPUState* cpu, const u8* d) {
     // The header's BSS range spans .sdata/.sdata2, so clear it before loading sections.
     u32 bss = be32(d + 0xD8), bss_sz = be32(d + 0xDC);
@@ -249,6 +258,7 @@ static void load_dol(CPUState* cpu, const u8* d) {
     for (int i = 0; i < 18; i++) {
         u32 off = be32(d + i * 4), addr = be32(d + 0x48 + i * 4), sz = be32(d + 0x90 + i * 4);
         if (sz) memcpy(cpu->ram + (addr & 0x01FFFFFF), d + off, sz);
+        if (i < 7) g_text[i].addr = addr, g_text[i].size = sz;
     }
     cpu->pc = be32(d + 0xE0);
 }
@@ -557,11 +567,13 @@ static int emu_main(int argc, char** argv) {
     if (getenv("ROTK_CPU_CLOCK") && atof(getenv("ROTK_CPU_CLOCK")) >= 0.5)
         cpu_oc_div = (u64)(12 * atof(getenv("ROTK_CPU_CLOCK")) + 0.5);
     hle_init(chunk_for);
+    cheats_init(&cpu, is_code);
     g_clock_cpu = &cpu;
     input_set_clock(guest_seconds);
     int checkpoint_op = 0;
     u64 checkpoint_since = 0;
     double guest_jump = 0;   // guest seconds skipped by loading checkpoints, left out of the pacing
+    u64 cheats_frame_seen = 0;
     // CHECKPOINT_AT=save@<s> or load@<s>: one checkpoint request at that guest time, for unattended tests.
     double checkpoint_at = 0;
     int checkpoint_auto = 0;
@@ -605,6 +617,7 @@ static int emu_main(int argc, char** argv) {
         s64 used = spin_skip(&cpu);
         if (!used) used = hle_cache_range(&cpu);
         if (!used) used = hle_try(&cpu);
+        if (!used && g_cheat_points_on) used = cheats_try(&cpu);
         if (used) goto charge;
         void (*fn)(CPUState*) = chunk_for(pc);
         if (!fn) { why = "pc left recompiled text"; break; }
@@ -662,6 +675,10 @@ static int emu_main(int argc, char** argv) {
         }
         hw_tick(cpu.timebase);
         if ((steps & 0xFFF) == 0) {
+            if (hw_draw_dones() != cheats_frame_seen) {   // once per frame, like Dolphin
+                cheats_frame_seen = hw_draw_dones();
+                cheats_frame();
+            }
             if (checkpoint_at > 0 && guest_seconds() >= checkpoint_at) {
                 checkpoint_request(checkpoint_auto);
                 checkpoint_at = 0;

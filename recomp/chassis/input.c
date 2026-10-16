@@ -111,7 +111,8 @@ void input_rumble(u32 port, int on) {
 }
 
 static void read_pad(u8 out[8]) {
-    const bool* k = SDL_GetKeyboardState(NULL);
+    static const bool released[SDL_SCANCODE_COUNT];
+    const bool* k = overlay_cheat_menu_open() ? released : SDL_GetKeyboardState(NULL);
     u16 b = 0;
     u8 sx = dir8(k[SDL_SCANCODE_LEFT], k[SDL_SCANCODE_RIGHT]);
     u8 sy = dir8(k[SDL_SCANCODE_DOWN], k[SDL_SCANCODE_UP]);
@@ -141,6 +142,21 @@ static void read_pad(u8 out[8]) {
         if (back && !back_was) back_combo = false;
         if (back && left && !left_was) { checkpoint_request(CHECKPOINT_SAVE); back_combo = true; }
         if (back && right && !right_was) { checkpoint_request(CHECKPOINT_LOAD); back_combo = true; }
+        static bool north_was, south_was, east_was, up_was, down_was;
+        bool north = SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_NORTH);
+        bool south = SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_SOUTH);
+        bool east = SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_EAST);
+        bool up = SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_DPAD_UP);
+        bool down = SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_DPAD_DOWN);
+        if (back && north && !north_was) { overlay_toggle_cheat_menu(); back_combo = true; }
+        if (!back && overlay_cheat_menu_open()) {
+            if (up && !up_was) overlay_cheat_menu_move(-1);
+            if (down && !down_was) overlay_cheat_menu_move(1);
+            if (south && !south_was) overlay_cheat_menu_toggle_selected();
+            if (east && !east_was) overlay_toggle_cheat_menu();
+        }
+        north_was = north, south_was = south, east_was = east, up_was = up, down_was = down;
+        if (overlay_cheat_menu_open()) p = NULL;
         if (!back && back_was && !back_combo) overlay_toggle_legend();
         back_was = back;
         left_was = left;
