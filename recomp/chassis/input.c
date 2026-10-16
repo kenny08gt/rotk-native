@@ -1,6 +1,7 @@
 #include "input.h"
 
 #include <SDL3/SDL.h>
+#include <stdio.h>
 #include <string.h>
 
 // Keyboard layout (port 0):
@@ -58,7 +59,7 @@ static SDL_Gamepad* gamepad(void) {
     last_scan = now;
     int count = 0;
     SDL_JoystickID* ids = SDL_GetGamepads(&count);
-    if (ids && count > 0) g_pad = SDL_OpenGamepad(ids[0]);
+    if (ids && count > 0 && (g_pad = SDL_OpenGamepad(ids[0]))) printf("controller: %s\n", SDL_GetGamepadName(g_pad));
     SDL_free(ids);
     return g_pad;
 }
