@@ -1,4 +1,5 @@
 #include "input.h"
+#include "overlay.h"
 
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -17,6 +18,9 @@ enum {
 };
 
 static SDL_Gamepad* g_pad;
+static _Atomic int g_pad_type;
+
+int input_pad_type(void) { return g_pad_type; }
 static double (*g_clock)(void);
 
 void input_set_clock(double (*now)(void)) { g_clock = now; }
@@ -52,6 +56,7 @@ static u16 autopress(void) {
 static SDL_Gamepad* gamepad(void) {
     if (g_pad && SDL_GamepadConnected(g_pad)) return g_pad;
     g_pad = NULL;
+    g_pad_type = SDL_GAMEPAD_TYPE_UNKNOWN;
     // Enumerating devices is slow: look for a newly connected controller at most once a second.
     static Uint64 last_scan;
     Uint64 now = SDL_GetTicks();
@@ -59,7 +64,10 @@ static SDL_Gamepad* gamepad(void) {
     last_scan = now;
     int count = 0;
     SDL_JoystickID* ids = SDL_GetGamepads(&count);
-    if (ids && count > 0 && (g_pad = SDL_OpenGamepad(ids[0]))) printf("controller: %s\n", SDL_GetGamepadName(g_pad));
+    if (ids && count > 0 && (g_pad = SDL_OpenGamepad(ids[0]))) {
+        printf("controller: %s\n", SDL_GetGamepadName(g_pad));
+        g_pad_type = SDL_GetGamepadType(g_pad);
+    }
     SDL_free(ids);
     return g_pad;
 }
@@ -131,6 +139,11 @@ static void read_pad(u8 out[8]) {
         };
         for (size_t i = 0; i < sizeof map / sizeof map[0]; i++)
             if (SDL_GetGamepadButton(p, map[i].sdl)) b |= map[i].gc;
+        // Back (Create on a DualSense, View on Xbox) has no GameCube button: it toggles the legend.
+        static bool back_was;
+        bool back = SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_BACK);
+        if (back && !back_was) overlay_toggle_legend();
+        back_was = back;
         Sint16 ax = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_LEFTX), ay = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_LEFTY);
         if (ax < -8000 || ax > 8000) sx = axis8(ax);
         if (ay < -8000 || ay > 8000) sy = (u8)(255 - axis8(ay));

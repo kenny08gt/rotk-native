@@ -5,6 +5,9 @@
 // Fills the 8-byte SI poll response (analog mode 3) for the given port; returns 0 if unplugged.
 int input_poll(u32 port, u8 out[8]);
 
+// SDL_GamepadType of the connected controller (SDL_GAMEPAD_TYPE_UNKNOWN when none), for the legend.
+int input_pad_type(void);
+
 // The game's rumble motor state for the port (on while the game keeps it on).
 void input_rumble(u32 port, int on);
 

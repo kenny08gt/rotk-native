@@ -136,6 +136,7 @@ static void aurora_frame(void) {
                 (e->sdl.key.key == SDLK_RETURN && (m & SDL_KMOD_ALT)))
                 VISetWindowFullscreen(!VIGetWindowFullscreen());
             if (e->sdl.key.key == SDLK_F1) overlay_toggle();
+            if (e->sdl.key.key == SDLK_F2) overlay_toggle_legend();
         }
     }
     g_frame_active = aurora_begin_frame();

@@ -129,6 +129,7 @@ also works, with rumble.
 | Action | How |
 |---|---|
 | Frame-rate counter (fps and the slowest frame) | F1 shows or hides it |
+| Controls legend (GameCube buttons on your controller and keyboard) | F2 or the controller's Create/View button, or start with `ROTK_LEGEND=1` |
 | Fullscreen | Control-Command-F or Option-Return, or start with `FULLSCREEN=1` |
 | Stretch to fill the screen | `ROTK_STRETCH=1` |
 | Anti-aliasing | `ROTK_MSAA=4` |
