@@ -1,4 +1,5 @@
 #include "gpu.h"
+#include "overlay.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -105,6 +106,7 @@ static void aurora_feed(const u8* data, u32 len) {
 
 static void aurora_frame(void) {
     if (g_frame_active) {
+        overlay_draw();
         aurora_end_frame();
         g_frames++;
         if (getenv("GPU_STATS") && g_frames % 60 == 0) {
@@ -133,6 +135,7 @@ static void aurora_frame(void) {
             if ((e->sdl.key.key == SDLK_F && (m & SDL_KMOD_GUI) && (m & SDL_KMOD_CTRL)) ||
                 (e->sdl.key.key == SDLK_RETURN && (m & SDL_KMOD_ALT)))
                 VISetWindowFullscreen(!VIGetWindowFullscreen());
+            if (e->sdl.key.key == SDLK_F1) overlay_toggle();
         }
     }
     g_frame_active = aurora_begin_frame();

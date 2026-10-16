@@ -85,6 +85,22 @@ int input_poll(u32 port, u8 out[8]) {
     return 1;
 }
 
+void input_rumble(u32 port, int on) {
+    static int was_on;
+    if (on != was_on && SDL_getenv("RUMBLE_LOG")) fprintf(stderr, "rumble %s\n", on ? "on" : "off");
+    if (port != 0 || !g_pad) { was_on = on; return; }
+    // Refresh at most every 100 ms while on; each request lasts 250 ms, so a stalled game stops it.
+    static Uint64 sent_at;
+    Uint64 now = SDL_GetTicks();
+    if (on && (!was_on || now - sent_at >= 100)) {
+        SDL_RumbleGamepad(g_pad, 0xC000, 0x8000, 250);
+        sent_at = now;
+    } else if (!on && was_on) {
+        SDL_RumbleGamepad(g_pad, 0, 0, 0);
+    }
+    was_on = on;
+}
+
 static void read_pad(u8 out[8]) {
     const bool* k = SDL_GetKeyboardState(NULL);
     u16 b = 0;

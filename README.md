@@ -116,7 +116,7 @@ recomp/build/rotk "/path/to/your/disc.iso"
 ## Controls
 
 Keyboard (player 1). The first game controller you connect (Xbox, PlayStation, Switch Pro and so on)
-also works.
+also works, with rumble.
 
 | GameCube | Key | | GameCube | Key |
 |---|---|---|---|---|
@@ -128,6 +128,7 @@ also works.
 
 | Action | How |
 |---|---|
+| Frame-rate counter (fps and the slowest frame) | F1 shows or hides it |
 | Fullscreen | Control-Command-F or Option-Return, or start with `FULLSCREEN=1` |
 | Stretch to fill the screen | `ROTK_STRETCH=1` |
 | Anti-aliasing | `ROTK_MSAA=4` |

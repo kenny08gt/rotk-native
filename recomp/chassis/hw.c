@@ -307,6 +307,9 @@ static void si_transfer(u32 csr) {
 static u32 si_inbuf(u32 ch, int high) {
     u8 st[8];
     if (!input_poll(ch, st)) return high ? 0x80000000u : 0;   // ERRSTAT: no controller
+    // The poll command in the channel's output buffer (0x40 0x03 0x0M) carries the rumble motor bits.
+    u32 out = get32(0x6400 + 12 * ch);
+    if (high && (out >> 16) == 0x40) input_rumble(ch, (out & 3) == 1);
     return high ? (u32)st[0] << 24 | (u32)st[1] << 16 | (u32)st[2] << 8 | st[3]
                 : (u32)st[4] << 24 | (u32)st[5] << 16 | (u32)st[6] << 8 | st[7];
 }
