@@ -463,6 +463,17 @@ static void fifo_store(u64 v, u8 size) {
         return;
     }
     u64 tail = g_fifo_tail;
+    // The draw-done token ends in a 0x02 byte, so a store without one can only shift the tail.
+    if (size < 8) v &= (1ull << (8 * size)) - 1;
+    u64 twos = v ^ 0x0202020202020202ull;
+    if (size < 8) twos |= ~0ull << (8 * size);
+    if (!((twos - 0x0101010101010101ull) & ~twos & 0x8080808080808080ull)) {
+        for (int i = size - 1; i >= 0; i--) g_cpu->ram[wp++] = (u8)(v >> (8 * i));
+        put32(PI_FIFO_WP, (wpr & PI_WP_WRAP) | wp);
+        g_fifo_bytes += size;
+        g_fifo_tail = size < 8 ? tail << (8 * size) | v : v;
+        return;
+    }
     for (int i = size - 1; i >= 0; i--) {
         u8 b = (u8)(v >> (8 * i));
         g_cpu->ram[wp++] = b;
@@ -595,13 +606,13 @@ static u64 ext_read(CPUState* cpu, u32 ea, u8 size) {
 
 static void ext_write(CPUState* cpu, u32 ea, u64 v, u8 size) {
     (void)cpu;
+    if ((ea & 0xFFFFF000u) == 0xCC008000u) {   // write-gather pipe
+        fifo_store(v, size);
+        return;
+    }
     u8* vm = vm_ptr(ea, size);
     if (vm) {
         for (int i = size - 1; i >= 0; i--, v >>= 8) vm[i] = (u8)v;
-        return;
-    }
-    if ((ea & 0xFFFFF000u) == 0xCC008000u) {   // write-gather pipe
-        fifo_store(v, size);
         return;
     }
     note(ea, 1);
