@@ -60,7 +60,8 @@ cmake -S . -B build-llvm -DCMAKE_BUILD_TYPE=Release -DROTK_BACKEND=llvm && cmake
 The LLVM functions can only be entered at their region leaders; for any other pc the fallback hook
 hands over to the C chunks, which the LLVM build also links (as `cfunc_*`). In the first big fight
 it retires about 17% fewer host instructions than the C build (`benchw.sh`: 993.5G against 1195.4G),
-mostly from the patches below that emit the exact floating-point fast paths inline.
+mostly from the patches below that emit the exact floating-point fast paths inline, but it runs fewer
+of them per cycle: both builds take about the same CPU time (253.9G against 249.7G host cycles).
 `tests/llvm_fp/build.sh` checks those against `chassis/fast_cpu.h` and the exact library.
 
 Third-party trees are patched: `patches/aurora-retail-fifo.patch` (Aurora, MIT) and the
