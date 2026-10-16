@@ -453,6 +453,37 @@ static void fifo_byte(u8 b) {
     }
 }
 
+// A whole store to the gather pipe: same effect as fifo_byte per byte, with the write pointer kept in a
+// register. Falls back to fifo_byte when the store wraps the ring, leaves RAM, or the FIFO is unlinked.
+static void fifo_store(u64 v, u8 size) {
+    u32 wpr = get32(PI_FIFO_WP);
+    u32 wp = wpr & 0x03FFFFFFu, end = get32(PI_FIFO_END) & 0x03FFFFFFu;
+    if (!fifo_linked() || wp + size > end || wp + size > g_cpu->ram_size) {
+        for (int i = size - 1; i >= 0; i--) fifo_byte((u8)(v >> (8 * i)));
+        return;
+    }
+    u64 tail = g_fifo_tail;
+    for (int i = size - 1; i >= 0; i--) {
+        u8 b = (u8)(v >> (8 * i));
+        g_cpu->ram[wp++] = b;
+        tail = tail << 8 | b;
+        if ((tail & 0xFFFFFFFFFFull) == 0x6145000002ull) {
+            put32(PI_FIFO_WP, (wpr & PI_WP_WRAP) | wp);
+            g_fifo_bytes += (u64)(size - i);
+            g_fifo_tail = tail;
+            gpu_drain();
+            g_draw_dones++;
+            g_draw_done_ticket = g_frame_hook ? g_frame_hook() : 0;
+            if (!g_draw_done_ticket) put16(PE_INTSR, get16(PE_INTSR) | PE_FINISH_INT);
+            for (i--; i >= 0; i--) fifo_byte((u8)(v >> (8 * i)));
+            return;
+        }
+    }
+    put32(PI_FIFO_WP, (wpr & PI_WP_WRAP) | wp);
+    g_fifo_bytes += size;
+    g_fifo_tail = tail;
+}
+
 static u32 pe_pending(void) {
     u16 sr = get16(PE_INTSR);
     return (sr & PE_FINISH_INT) && (sr & PE_FINISH_EN) ? PI_INT_PE_FINISH : 0;
@@ -570,7 +601,7 @@ static void ext_write(CPUState* cpu, u32 ea, u64 v, u8 size) {
         return;
     }
     if ((ea & 0xFFFFF000u) == 0xCC008000u) {   // write-gather pipe
-        for (int i = size - 1; i >= 0; i--) fifo_byte((u8)(v >> (8 * i)));
+        fifo_store(v, size);
         return;
     }
     note(ea, 1);
