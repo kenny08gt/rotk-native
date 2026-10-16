@@ -391,6 +391,29 @@ static s64 hle_cache_range(CPUState* c) {
     return 8 + 3 * (s64)n;
 }
 
+// fn_80007030 spins on a flag byte (lbz r0, 0xf(r3); extsb. r0, r0; bne) until an interrupt
+// clears it, and nothing else can change the byte inside a dispatch. Once two generated runs with
+// the flag set have used the same cycles, later ones are replaced by that charge and the loop's
+// final r0/cr0, so timing and state match the generated code exactly.
+enum { SPIN_PC = 0x80007038u, SPIN_BASE = 0x8019D830u };
+static s64 g_spin_cost, g_spin_seen;
+static int spin_flag_set(const CPUState* c) {
+    return c->pc == SPIN_PC && c->gpr[3] == SPIN_BASE && c->ram[SPIN_BASE + 0xF - 0x80000000u] != 0;
+}
+static s64 spin_skip(CPUState* c) {
+    if (g_spin_cost <= 0 || !spin_flag_set(c)) return 0;
+    s32 r0 = (s8)c->ram[SPIN_BASE + 0xF - 0x80000000u];
+    c->gpr[0] = (u32)r0;
+    c->cr = (c->cr & 0x0FFFFFFFu) | ((r0 < 0 ? 8u : 4u) | ((c->xer >> 31) & 1u)) << 28;
+    return g_spin_cost;
+}
+static void spin_learn(int flag_was_set, const CPUState* c, s64 used) {
+    if (!flag_was_set || g_spin_cost < 0 || c->pc != SPIN_PC || c->ram[SPIN_BASE + 0xF - 0x80000000u] == 0) return;
+    if (g_spin_seen == 0) g_spin_seen = used;
+    else if (g_spin_seen != used) g_spin_cost = -1;   // not a fixed cost: never skip
+    else if (g_spin_cost == 0) g_spin_cost = used;
+}
+
 typedef void (*ChunkFn)(CPUState*);
 static ChunkFn chunk_in(const void* table, size_t n, u32 pc) {
     const struct { u32 base; ChunkFn fn; }* t = table;
@@ -520,7 +543,8 @@ static int emu_main(int argc, char** argv) {
             threads_at = 0;
         }
         // Native stand-ins (cache maintenance, hle.c) charge their guest cycles like a dispatch.
-        s64 used = hle_cache_range(&cpu);
+        s64 used = spin_skip(&cpu);
+        if (!used) used = hle_cache_range(&cpu);
         if (!used) used = hle_try(&cpu);
         if (used) goto charge;
         void (*fn)(CPUState*) = chunk_for(pc);
@@ -541,6 +565,7 @@ static int emu_main(int argc, char** argv) {
             hist_slot = lo ? (long)lo - 1 : -1;
         }
         u64 fn_t0 = hist_slot >= 0 ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0;
+        int spin_entry = g_spin_cost == 0 && spin_flag_set(&cpu);
         cpu.downcount = 4096;
         fn(&cpu);
 #ifdef ROTK_LLVM
@@ -561,6 +586,7 @@ static int emu_main(int argc, char** argv) {
         // Timebase ticks at bus/4 = CPU/12; charge the cycles this dispatch consumed.
         used = 4096 - cpu.downcount;
         if (used < 1) used = 1;
+        spin_learn(spin_entry, &cpu, used);
         if (hist_slot >= 0) {
             hist_ns[hist_slot] += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - fn_t0;
             hist_cyc[hist_slot] += (u64)used;
