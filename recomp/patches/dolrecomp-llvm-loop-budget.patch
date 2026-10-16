@@ -1,0 +1,26 @@
+diff --git a/src/backend/llvm/timing.cpp b/src/backend/llvm/timing.cpp
+index 677ee63..2a8e525 100644
+--- a/src/backend/llvm/timing.cpp
++++ b/src/backend/llvm/timing.cpp
+@@ -104,11 +104,16 @@ void FunctionEmitter::emitBudgetGuard(u32 pc) {
+   Value *cycles = builder_.CreateAdd(
+       builder_.CreateLoad(i64, guard_cycles_local_),
+       builder_.CreateLoad(i64, cycles_));
+-  Value *overCycles = builder_.CreateICmpUGE(
+-      cycles, modern_runtime_ ? builder_.CreateLoad(i64,
+-                                                    builder_.CreateStructGEP(
+-                                                        chainType(), chain_, 4))
+-                              : static_cast<Value *>(ConstantInt::get(i64, 256)));
++  // recompcore: leave once the unsettled cycles use up what is left of the dispatch's downcount,
++  // so a loop runs as long as the C backend would instead of returning every 256 cycles.
++  Value *overCycles =
++      modern_runtime_
++          ? builder_.CreateICmpUGE(
++                cycles, builder_.CreateLoad(i64, builder_.CreateStructGEP(
++                                                     chainType(), chain_, 4)))
++          : builder_.CreateICmpSGE(
++                builder_.CreateLoad(i64, cycles_),
++                loadOffset(i64, offsetof(CPUState, downcount)));
+   Value *exhausted = overCycles;
+   if (!native_abi_ || !cold_escapes_) {
+     Value *steps = builder_.CreateLoad(i64, guard_steps_);

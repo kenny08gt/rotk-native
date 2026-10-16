@@ -51,6 +51,7 @@ apply_patch third_party/dolrecomp recomp/patches/dolrecomp-flat-vm.patch
 apply_patch third_party/dolrecomp recomp/patches/dolrecomp-fast-fp-helpers.patch
 apply_patch third_party/dolrecomp recomp/patches/dolrecomp-llvm-inline-single-fp.patch
 apply_patch third_party/dolrecomp recomp/patches/dolrecomp-llvm-inline-double-fp.patch
+apply_patch third_party/dolrecomp recomp/patches/dolrecomp-llvm-loop-budget.patch
 
 echo "== game code from your disc"
 python3 tools/gcm_extract.py "$ISO" extracted --sys-only
