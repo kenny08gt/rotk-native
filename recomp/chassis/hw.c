@@ -508,7 +508,13 @@ static u32 pi_cause(void) {
            PI_RESET_SWITCH_RELEASED;
 }
 
-int hw_external_pending(void) { return (pi_cause() & get32(PI_INTMR) & 0xFFFFu) != 0; }
+// Same answer as (pi_cause() & INTMR) != 0, testing only the unmasked sources (all are pure reads).
+int hw_external_pending(void) {
+    u32 m = get32(PI_INTMR) & 0xFFFFu;
+    return (m & PI_INT_VI && vi_pending()) || (m & (PI_INT_PE_TOKEN | PI_INT_PE_FINISH) && (pe_pending() & m)) ||
+           (m & PI_INT_DSP && dsp_pending()) || (m & PI_INT_SI && si_pending()) || (m & PI_INT_DI && di_pending()) ||
+           (m & PI_INT_EXI && exi_pending()) || (m & PI_INT_CP && cp_pending());
+}
 
 void hw_tick(u64 tb) {
     aid_tick(tb);
