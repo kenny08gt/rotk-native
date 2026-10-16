@@ -402,7 +402,16 @@ static ChunkFn chunk_in(const void* table, size_t n, u32 pc) {
     if (lo == 0 || pc >= 0x8016F580u) return NULL;
     return t[lo - 1].fn;
 }
-static ChunkFn chunk_for(u32 pc) { return chunk_in(kChunks, NCHUNKS, pc); }
+// Direct-mapped cache in front of the binary search; pc 0 never dispatches, so it marks an empty slot.
+static ChunkFn chunk_for(u32 pc) {
+    static struct { u32 pc; ChunkFn fn; } cache[4096];
+    u32 slot = (pc >> 2) & 4095;
+    if (cache[slot].pc != pc) {
+        cache[slot].pc = pc;
+        cache[slot].fn = chunk_in(kChunks, NCHUNKS, pc);
+    }
+    return cache[slot].fn;
+}
 
 // usage: rotk <disc.iso>                     play (boot files come from the disc)
 //        rotk <sys dir|disc> <disc.iso> <symbols.tsv> [max_dispatches] [max_seconds]   test runs
