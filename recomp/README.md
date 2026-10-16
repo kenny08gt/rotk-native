@@ -58,13 +58,13 @@ cmake -S . -B build-llvm -DCMAKE_BUILD_TYPE=Release -DROTK_BACKEND=llvm && cmake
 ```
 
 The LLVM functions can only be entered at their region leaders; for any other pc the fallback hook
-hands over to the C chunks, which the LLVM build also links (as `cfunc_*`). It runs the game, but
-in the first big fight it executes as many host instructions per guest cycle as the C build:
-every exact floating-point operation is an out-of-line call (`chassis/fast_helpers.c` supplies the
-fast paths), and guest registers are written back around each call.
+hands over to the C chunks, which the LLVM build also links (as `cfunc_*`). In the first big fight
+it retires about 17% fewer host instructions than the C build (`benchw.sh`: 993.5G against 1195.4G),
+mostly from the patches below that emit the exact floating-point fast paths inline.
+`tests/llvm_fp/build.sh` checks those against `chassis/fast_cpu.h` and the exact library.
 
-Third-party trees are patched: `patches/aurora-retail-fifo.patch` (Aurora, MIT) and
-`patches/dolrecomp-flat-vm.patch` (DolRecomp, GPL-3.0). `chassis/ax_hle.cpp` is adapted from Dolphin
+Third-party trees are patched: `patches/aurora-retail-fifo.patch` (Aurora, MIT) and the
+`patches/dolrecomp-*.patch` series (DolRecomp, GPL-3.0; `bootstrap.sh` applies them in order). `chassis/ax_hle.cpp` is adapted from Dolphin
 (GPL-2.0+).
 
 Regenerating the C from the DOL:
