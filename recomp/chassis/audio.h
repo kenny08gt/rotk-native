@@ -4,3 +4,5 @@
 
 void audio_init(void);
 void audio_push_ai_block(const uint8_t* be_rl_samples, uint32_t bytes);
+// Drops queued output (after loading a checkpoint).
+void audio_flush(void);

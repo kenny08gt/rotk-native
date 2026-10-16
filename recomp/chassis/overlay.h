@@ -10,6 +10,8 @@ extern "C" {
 void overlay_draw(void);
 void overlay_toggle(void);
 void overlay_toggle_legend(void);
+// Shows a short message (a string literal) at the top of the screen for two seconds.
+void overlay_notify(const char* message);
 
 #ifdef __cplusplus
 }

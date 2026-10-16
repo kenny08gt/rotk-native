@@ -129,7 +129,9 @@ also works, with rumble.
 | Action | How |
 |---|---|
 | Frame-rate counter (fps and the slowest frame) | F1 shows or hides it |
-| Controls legend (GameCube buttons on your controller and keyboard) | F2 or the controller's Create/View button, or start with `ROTK_LEGEND=1` |
+| Controls legend (GameCube buttons on your controller and keyboard) | F2 or tap the controller's Create/View button, or start with `ROTK_LEGEND=1` |
+| Save a checkpoint | F5, or hold Create/View and press L1/LB |
+| Load the checkpoint | F9, or hold Create/View and press R1/RB |
 | Fullscreen | Control-Command-F or Option-Return, or start with `FULLSCREEN=1` |
 | Stretch to fill the screen | `ROTK_STRETCH=1` |
 | Anti-aliasing | `ROTK_MSAA=4` |
@@ -144,6 +146,12 @@ To use the settings with the app, start it from the terminal, for example
 The memory card in slot A is a 251-block card image at
 `~/Library/Application Support/rotk/MemoryCardA.raw`. A raw card image from Dolphin also works. Use
 `MEMCARD=<path>` to use another file, or `MEMCARD=none` to start with an empty slot.
+
+A checkpoint is a snapshot of the whole machine, like a Dolphin save state. It goes to
+`~/Library/Application Support/rotk/checkpoint.state`, survives quitting the app, and is about 20 MB.
+There is one checkpoint: saving again replaces it. Loading one does not change the memory card, so
+don't load a checkpoint while the game is saving or loading from the card. A checkpoint only loads in
+the build that made it (a rebuild that changes the saved state's size says "No checkpoint to load").
 
 ## Troubleshooting
 

@@ -1,5 +1,6 @@
 #include "input.h"
 #include "overlay.h"
+#include "savestate.h"
 
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -130,6 +131,23 @@ static void read_pad(u8 out[8]) {
 
     SDL_Gamepad* p = gamepad();
     if (p) {
+        // Back (Create on a DualSense, View on Xbox) has no GameCube button. Held, it turns the
+        // shoulders into checkpoint save (left) and load (right) and hides the pad from the game;
+        // tapped alone, it toggles the legend.
+        static bool back_was, back_combo, left_was, right_was;
+        bool back = SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_BACK);
+        bool left = SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
+        bool right = SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
+        if (back && !back_was) back_combo = false;
+        if (back && left && !left_was) { checkpoint_request(CHECKPOINT_SAVE); back_combo = true; }
+        if (back && right && !right_was) { checkpoint_request(CHECKPOINT_LOAD); back_combo = true; }
+        if (!back && back_was && !back_combo) overlay_toggle_legend();
+        back_was = back;
+        left_was = left;
+        right_was = right;
+        if (back) p = NULL;
+    }
+    if (p) {
         static const struct { SDL_GamepadButton sdl; u16 gc; } map[] = {
             {SDL_GAMEPAD_BUTTON_SOUTH, BTN_A}, {SDL_GAMEPAD_BUTTON_EAST, BTN_B},
             {SDL_GAMEPAD_BUTTON_WEST, BTN_X}, {SDL_GAMEPAD_BUTTON_NORTH, BTN_Y},
@@ -139,11 +157,6 @@ static void read_pad(u8 out[8]) {
         };
         for (size_t i = 0; i < sizeof map / sizeof map[0]; i++)
             if (SDL_GetGamepadButton(p, map[i].sdl)) b |= map[i].gc;
-        // Back (Create on a DualSense, View on Xbox) has no GameCube button: it toggles the legend.
-        static bool back_was;
-        bool back = SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_BACK);
-        if (back && !back_was) overlay_toggle_legend();
-        back_was = back;
         Sint16 ax = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_LEFTX), ay = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_LEFTY);
         if (ax < -8000 || ax > 8000) sx = axis8(ax);
         if (ay < -8000 || ay > 8000) sy = (u8)(255 - axis8(ay));

@@ -2,6 +2,7 @@
 // Other devices (IPL/RTC/SRAM, slot B, serial ports) answer nothing, as before.
 #pragma once
 #include "cpu/cpu.h"
+#include "savestate.h"
 
 // Opens (or creates on first save) the slot A card image; NULL leaves the slot empty.
 void exi_init(u8* ram, u32 ram_size, const char* card_path);
@@ -14,3 +15,5 @@ void exi_tick(u64 timebase);
 u32 exi_pending(void);
 // Writes the card image back to disk (also done after each program/erase burst settles).
 void exi_flush(void);
+// Checkpoint: channel registers, card command state, SRAM/RTC.
+void exi_state(StateIO* io);

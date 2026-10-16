@@ -2,6 +2,7 @@
 // Loads main.dol into guest RAM, fakes the IPL/apploader low-memory setup,
 // dispatches recompiled chunks, delivers exceptions through the OS's own
 // handler table, and reports how far the game gets.
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +13,11 @@
 #include "hw.h"
 #include "hle.h"
 #include "input.h"
+#include "audio.h"
+#include "exi.h"
+#include "ax_hle.h"
+#include "overlay.h"
+#include "savestate.h"
 #include <libproc.h>
 #include <unistd.h>
 
@@ -438,6 +444,48 @@ static ChunkFn chunk_for(u32 pc) {
 
 // usage: rotk <disc.iso>                     play (boot files come from the disc)
 //        rotk <sys dir|disc> <disc.iso> <symbols.tsv> [max_dispatches] [max_seconds]   test runs
+// The whole machine for a checkpoint: CPU registers (everything before the host callbacks),
+// RAM, the VM window and the devices.
+static void machine_state(StateIO* io, CPUState* cpu) {
+    state_io(io, cpu, offsetof(CPUState, external_read));
+    state_io(io, cpu->ram, cpu->ram_size);
+    state_io(io, g_fast_vm, g_fast_vm_size);
+    hw_state(io);
+    exi_state(io);
+    ax_state(io);
+}
+
+// Runs between dispatches just after a draw-done, when the GX stream is at a frame boundary.
+// Returns how far a load moved guest time, in seconds, so real-time pacing can follow.
+static double checkpoint_service(CPUState* cpu, int op) {
+    char game[6];
+    memcpy(game, cpu->ram, sizeof game);
+    if (op == CHECKPOINT_SAVE) {
+        StateIO io = {.cap = 96u << 20};
+        io.buf = malloc(io.cap);
+        machine_state(&io, cpu);
+        printf("checkpoint saved at %.2f s guest (%.1f MB)\n", guest_seconds(), io.pos / 1048576.0);
+        checkpoint_write(&io, game);
+        overlay_notify("Checkpoint saved");
+        return 0;
+    }
+    StateIO size = {0};
+    machine_state(&size, cpu);
+    StateIO io = {0};
+    if (!checkpoint_read(&io, game, size.pos)) {
+        printf("checkpoint: none to load\n");
+        overlay_notify("No checkpoint to load");
+        return 0;
+    }
+    u64 tb = cpu->timebase;
+    machine_state(&io, cpu);
+    free(io.buf);
+    audio_flush();
+    printf("checkpoint loaded: %.2f s guest\n", guest_seconds());
+    overlay_notify("Checkpoint loaded");
+    return ((double)cpu->timebase - (double)tb) / 40500000.0;
+}
+
 static int emu_main(int argc, char** argv) {
     if (argc != 2 && argc < 4) {
         fprintf(stderr, "usage: %s <disc.iso>\n       %s <sysdir> <disc.iso> <symbols.tsv> [max_dispatches] [max_seconds]\n",
@@ -511,6 +559,17 @@ static int emu_main(int argc, char** argv) {
     hle_init(chunk_for);
     g_clock_cpu = &cpu;
     input_set_clock(guest_seconds);
+    int checkpoint_op = 0;
+    u64 checkpoint_since = 0;
+    double guest_jump = 0;   // guest seconds skipped by loading checkpoints, left out of the pacing
+    // CHECKPOINT_AT=save@<s> or load@<s>: one checkpoint request at that guest time, for unattended tests.
+    double checkpoint_at = 0;
+    int checkpoint_auto = 0;
+    if (getenv("CHECKPOINT_AT")) {
+        char what[8] = {0};
+        if (sscanf(getenv("CHECKPOINT_AT"), "%7[a-z]@%lf", what, &checkpoint_at) == 2)
+            checkpoint_auto = !strcmp(what, "save") ? CHECKPOINT_SAVE : CHECKPOINT_LOAD;
+    }
     const char* why = "dispatch limit";
     for (; steps < limit; steps++) {
         // RealMode() rfi's to a physical address; run it from the cached mirror.
@@ -603,12 +662,21 @@ static int emu_main(int argc, char** argv) {
         }
         hw_tick(cpu.timebase);
         if ((steps & 0xFFF) == 0) {
+            if (checkpoint_at > 0 && guest_seconds() >= checkpoint_at) {
+                checkpoint_request(checkpoint_auto);
+                checkpoint_at = 0;
+            }
+            if (!checkpoint_op && (checkpoint_op = checkpoint_take())) checkpoint_since = hw_draw_dones();
+            if (checkpoint_op && hw_draw_dones() != checkpoint_since) {
+                guest_jump += checkpoint_service(&cpu, checkpoint_op);
+                checkpoint_op = 0;
+            }
             double now = wall_seconds() - t0;
             if (now > max_seconds) { why = "time limit"; break; }
             int bench_stop = 0;
             bench_window(&cpu, &bench_stop);
             if (bench_stop) { why = "bench window end"; break; }
-            double ahead = cpu.timebase / 40500000.0 - now;
+            double ahead = cpu.timebase / 40500000.0 - guest_jump - now;
             if (throttle && ahead > 0.002) {
                 struct timespec ts = {0, (long)(ahead * 1e9)};
                 nanosleep(&ts, NULL);

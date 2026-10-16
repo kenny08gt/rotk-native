@@ -13,10 +13,32 @@ static char g_text[48] = "-- fps";
 
 extern "C" int input_pad_type(void);
 
+static ImU32 rgb(int r, int g, int b, int a = 255) { return IM_COL32(r, g, b, a); }
+
 extern "C" void overlay_toggle(void) { g_show = !g_show; }
 extern "C" void overlay_toggle_legend(void) { g_legend = !g_legend; }
 
-static ImU32 rgb(int r, int g, int b, int a = 255) { return IM_COL32(r, g, b, a); }
+static std::atomic<const char*> g_note{nullptr};
+static std::atomic<Uint64> g_note_at{0};
+
+extern "C" void overlay_notify(const char* message) {
+    g_note_at = SDL_GetTicksNS();
+    g_note = message;
+}
+
+static void draw_note(void) {
+    const char* note = g_note;
+    double age = (SDL_GetTicksNS() - g_note_at) / 1e9;
+    if (!note || age > 2.0) return;
+    float alpha = age < 1.5 ? 1.0f : (float)(2.0 - age) * 2.0f;
+    float size = ImGui::GetFontSize() * 2.0f;
+    ImVec2 ext = ImGui::GetFont()->CalcTextSizeA(size, 1e9f, 0, note);
+    ImVec2 pos(ImGui::GetIO().DisplaySize.x / 2 - ext.x / 2, 60);
+    ImDrawList* d = ImGui::GetForegroundDrawList();
+    d->AddRectFilled(ImVec2(pos.x - 18, pos.y - 10), ImVec2(pos.x + ext.x + 18, pos.y + ext.y + 10),
+                     rgb(0, 0, 0, (int)(190 * alpha)), 10);
+    d->AddText(ImGui::GetFont(), size, pos, rgb(255, 255, 255, (int)(255 * alpha)), note);
+}
 
 static void text_centered(ImDrawList* d, float size, ImVec2 c, ImU32 col, const char* t) {
     ImVec2 e = ImGui::GetFont()->CalcTextSizeA(size, 1e9f, 0, t);
@@ -76,7 +98,7 @@ static void draw_legend(void) {
     ImVec2 disp = ImGui::GetIO().DisplaySize;
     ImVec2 o(disp.x - width - 16, 50);
     ImDrawList* d = ImGui::GetForegroundDrawList();
-    float height = row_h * (n + 2) + fs * 0.5f;
+    float height = row_h * (n + 3.75f) + fs * 0.5f;
     d->AddRectFilled(o, ImVec2(o.x + width, o.y + height), rgb(0, 0, 0, 185), 10);
     ImU32 dim = rgb(170, 170, 175), fg = rgb(240, 240, 240);
     float y = o.y + row_h * 0.6f;
@@ -104,7 +126,15 @@ static void draw_legend(void) {
         d->AddText(ImGui::GetFont(), fs, ImVec2(o.x + col_key, y - fs / 2), fg, w.key);
     }
     y += row_h;
-    d->AddText(ImGui::GetFont(), fs * 0.9f, ImVec2(o.x + fs, y - fs / 2), dim, pad ? "F2 or Create/Back: hide" : "F2: hide");
+    const char* hold = ps ? "Create" : nin ? "-" : "Back";
+    char line[64];
+    snprintf(line, sizeof line, pad ? "Save checkpoint: F5 or %s+%s" : "Save checkpoint: F5", hold, ps ? "L1" : nin ? "L" : "LB");
+    d->AddText(ImGui::GetFont(), fs * 0.9f, ImVec2(o.x + fs, y - fs / 2), fg, line);
+    y += row_h * 0.75f;
+    snprintf(line, sizeof line, pad ? "Load checkpoint: F9 or %s+%s" : "Load checkpoint: F9", hold, ps ? "R1" : nin ? "R" : "RB");
+    d->AddText(ImGui::GetFont(), fs * 0.9f, ImVec2(o.x + fs, y - fs / 2), fg, line);
+    y += row_h;
+    d->AddText(ImGui::GetFont(), fs * 0.9f, ImVec2(o.x + fs, y - fs / 2), dim, pad ? "F2 or tap Create/Back: hide legend" : "F2: hide legend");
 }
 
 // Frames per second and the slowest frame, both over the last half second, so a stutter that the
@@ -128,6 +158,7 @@ extern "C" void overlay_draw(void) {
         frames = 0;
         worst_ms = 0;
     }
+    draw_note();
     if (g_legend) draw_legend();
     if (!g_show) return;
     ImDrawList* d = ImGui::GetForegroundDrawList();

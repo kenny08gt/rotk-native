@@ -84,10 +84,10 @@ add_custom_command(OUTPUT ${ROTK_CHUNK_TABLE}
     COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/make_chunk_table.py ${ROTK_GEN}/generated.h ${ROTK_CHUNK_TABLE}
     DEPENDS ${ROTK_GEN}/generated.h ${CMAKE_CURRENT_SOURCE_DIR}/tools/make_chunk_table.py)
 
-add_executable(rotk ${ROTK_CHUNK_TABLE} chassis/main.c chassis/hw.c chassis/gpu.c chassis/input.c chassis/overlay.cpp chassis/ax_hle.cpp chassis/audio.c chassis/exi.c chassis/hle.c chassis/fast_helpers.c)
+add_executable(rotk ${ROTK_CHUNK_TABLE} chassis/main.c chassis/hw.c chassis/gpu.c chassis/input.c chassis/overlay.cpp chassis/ax_hle.cpp chassis/audio.c chassis/exi.c chassis/hle.c chassis/fast_helpers.c chassis/savestate.c)
 target_include_directories(rotk PRIVATE ${ROTK_GEN} ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_options(rotk PRIVATE -Wall -Wextra)
-target_link_libraries(rotk PRIVATE rotk_chunks aurora::core aurora::gx aurora::main aurora::vi)
+target_link_libraries(rotk PRIVATE rotk_chunks aurora::core aurora::gx aurora::main aurora::vi compression)
 if(ROTK_BACKEND STREQUAL "llvm")
     target_sources(rotk PRIVATE ${ROTK_CCHUNK_TABLE})
     target_compile_definitions(rotk PRIVATE ROTK_LLVM)

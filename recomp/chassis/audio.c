@@ -62,3 +62,7 @@ void audio_push_ai_block(const uint8_t* src, uint32_t bytes) {
     if (g_stream && SDL_GetAudioStreamQueued(g_stream) <= 32000 * 4 / 5)
         SDL_PutAudioStreamData(g_stream, out, (int)(frames * 4));
 }
+
+void audio_flush(void) {
+    if (g_stream) SDL_ClearAudioStream(g_stream);
+}

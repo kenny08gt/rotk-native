@@ -718,11 +718,47 @@ static void spr_write(CPUState* cpu, u16 spr, u32 value, u32 cia) {
     g_spr[spr & 1023] = value;
 }
 
+static u64 g_dec_fired_for = ~0ull;
+
 int hw_decrementer_expired(CPUState* cpu) {
-    static u64 fired_for = ~0ull;
-    if (g_dec_value - (s64)(cpu->timebase - g_dec_tb) >= 0 || fired_for == g_dec_tb) return 0;
-    fired_for = g_dec_tb;
+    if (g_dec_value - (s64)(cpu->timebase - g_dec_tb) >= 0 || g_dec_fired_for == g_dec_tb) return 0;
+    g_dec_fired_for = g_dec_tb;
     return 1;
+}
+
+u64 hw_draw_dones(void) { return g_draw_dones; }
+
+void hw_state(StateIO* io) {
+    STATE(io, g_hw);
+    state_io(io, g_aram, ARAM_SIZE);
+    STATE(io, g_dsp_out);
+    STATE(io, g_dsp_out_head);
+    STATE(io, g_dsp_out_tail);
+    STATE(io, g_dsp_prev_in);
+    STATE(io, g_dsp_rom_addr);
+    STATE(io, g_dsp_rom_len);
+    STATE(io, g_dsp_state);
+    STATE(io, g_dsp_ax_resident);
+    STATE(io, g_dsp_upload);
+    STATE(io, g_dsp_upload_n);
+    STATE(io, g_aid_next_tb);
+    STATE(io, g_aid_block_addr);
+    STATE(io, g_di_done_at);
+    STATE(io, g_next_retrace);
+    STATE(io, g_ai_base_count);
+    STATE(io, g_ai_base_tb);
+    STATE(io, g_fifo_tail);
+    STATE(io, g_spr);
+    STATE(io, g_dec_value);
+    STATE(io, g_dec_tb);
+    STATE(io, g_dec_fired_for);
+    // A frame the GPU thread was still drawing: tickets belong to this run, so signal its draw-done now.
+    u8 drawing = g_draw_done_ticket != 0;
+    STATE(io, drawing);
+    if (io->loading) {
+        g_draw_done_ticket = 0;
+        if (drawing) put16(PE_INTSR, get16(PE_INTSR) | PE_FINISH_INT);
+    }
 }
 
 void hw_init(const char* iso_path) {

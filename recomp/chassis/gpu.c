@@ -1,5 +1,6 @@
 #include "gpu.h"
 #include "overlay.h"
+#include "savestate.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -137,6 +138,8 @@ static void aurora_frame(void) {
                 VISetWindowFullscreen(!VIGetWindowFullscreen());
             if (e->sdl.key.key == SDLK_F1) overlay_toggle();
             if (e->sdl.key.key == SDLK_F2) overlay_toggle_legend();
+            if (e->sdl.key.key == SDLK_F5) checkpoint_request(CHECKPOINT_SAVE);
+            if (e->sdl.key.key == SDLK_F9) checkpoint_request(CHECKPOINT_LOAD);
         }
     }
     g_frame_active = aurora_begin_frame();

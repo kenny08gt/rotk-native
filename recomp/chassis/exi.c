@@ -349,3 +349,19 @@ u32 exi_pending(void) {
     }
     return 0;
 }
+
+// The card image itself stays out of checkpoints, as in Dolphin: loading one never undoes a save.
+void exi_state(StateIO* io) {
+    STATE(io, g_ch);
+    STATE(io, g_card.command);
+    STATE(io, g_card.status);
+    STATE(io, g_card.interrupt_switch);
+    STATE(io, g_card.interrupt_set);
+    STATE(io, g_card.position);
+    STATE(io, g_card.address);
+    STATE(io, g_card.program_buffer);
+    STATE(io, g_card.done_at);
+    STATE(io, g_now);
+    STATE(io, g_sram);
+    STATE(io, g_ipl);
+}

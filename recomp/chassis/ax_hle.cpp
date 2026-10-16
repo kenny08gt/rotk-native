@@ -604,6 +604,13 @@ int ax_mail(u32 mail) {
     return AX_RUNNING;
 }
 
+// Command lists run to completion inside one mail, so only the mailbox protocol carries over.
+void ax_state(StateIO* io) {
+    STATE(io, s_mail_state);
+    STATE(io, s_cmdlist_size);
+    STATE(io, s_compressor_pos);
+}
+
 void ax_stats(unsigned long long* cmdlists, unsigned long long* voice_ms) {
     *cmdlists = g_cmdlists;
     *voice_ms = g_voices_processed;

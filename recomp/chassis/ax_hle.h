@@ -1,6 +1,7 @@
 // AX audio microcode HLE (GameCube variant): command lists, voice decoding and mixing.
 #pragma once
 #include <stdint.h>
+#include "savestate.h"
 typedef uint8_t u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
@@ -20,6 +21,8 @@ void ax_resume(void);
 enum { AX_RUNNING = 1, AX_NEW_UCODE = 0, AX_RESET = -1 };
 // CPU->DSP mail while the AX task runs.
 int ax_mail(u32 mail);
+// Checkpoint: the mail protocol state between command lists.
+void ax_state(StateIO* io);
 void ax_stats(unsigned long long* cmdlists, unsigned long long* voice_ms);
 
 #ifdef __cplusplus

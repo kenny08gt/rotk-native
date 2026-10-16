@@ -2,6 +2,7 @@
 // devices boot needs (PI interrupts, VI retrace, DI disc reads, DSP/ARAM, EXI, SI).
 #pragma once
 #include "cpu/cpu.h"
+#include "savestate.h"
 
 // PI interrupt cause bits (INTSR at 0xCC003000).
 enum {
@@ -39,3 +40,7 @@ void hw_dma_trap(const char* who, u32 phys, u32 len);
 
 // MMIO access log for the end-of-run report.
 void hw_report(const char* (*sym_for)(u32 pc, u32* off));
+// GX draw-done markers seen so far: the FIFO stream is at a frame boundary just after one.
+u64 hw_draw_dones(void);
+// Checkpoint: device registers, ARAM, DSP mailboxes and timers.
+void hw_state(StateIO* io);
