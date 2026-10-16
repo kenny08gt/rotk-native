@@ -411,7 +411,7 @@ static int same_state(const CPUState* a, const CPUState* b) {
            a->pc == b->pc && a->fpscr == b->fpscr && a->xer == b->xer;
 }
 
-static s64 verify(CPUState* c, const Native* nat) {
+__attribute__((noinline)) static s64 verify(CPUState* c, const Native* nat) {
     u32 lo, len;
     nat->writes(c, &lo, &len);
     u8* mem = len ? fast_ram(c, lo, len) : NULL;
