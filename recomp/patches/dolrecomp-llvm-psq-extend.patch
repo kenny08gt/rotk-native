@@ -1,0 +1,74 @@
+diff --git a/src/backend/llvm/psq_convert.cpp b/src/backend/llvm/psq_convert.cpp
+index 457af51..dd157df 100644
+--- a/src/backend/llvm/psq_convert.cpp
++++ b/src/backend/llvm/psq_convert.cpp
+@@ -1,7 +1,10 @@
+ #include "backend/llvm/psq_convert.h"
+ 
++#include <llvm/IR/BasicBlock.h>
+ #include <llvm/IR/Constants.h>
++#include <llvm/IR/Function.h>
+ #include <llvm/IR/Intrinsics.h>
++#include <llvm/IR/MDBuilder.h>
+ #include <llvm/IR/Module.h>
+ 
+ namespace dolllvm {
+@@ -9,11 +12,35 @@ namespace dolllvm {
+ using namespace llvm;
+ 
+ Value *extendPSQFloat(IRBuilder<> &builder, Module &module, Value *bits) {
+-  Type *i32 = Type::getInt32Ty(module.getContext());
+-  Type *i64 = Type::getInt64Ty(module.getContext());
+-  Value *x = builder.CreateZExt(bits, i64);
++  LLVMContext &context = module.getContext();
++  Type *i32 = Type::getInt32Ty(context);
++  Type *i64 = Type::getInt64Ty(context);
++  Type *f64 = Type::getDoubleTy(context);
+   Value *exponent =
+       builder.CreateAnd(builder.CreateLShr(bits, 23), builder.getInt32(0xff));
++  // Zeros and normal numbers convert exactly with a host fpext; denormals, infinities and NaNs
++  // take the bit-exact path (a host fpext would quiet signalling NaNs).
++  Value *plain = builder.CreateOr(
++      builder.CreateAnd(builder.CreateICmpNE(exponent, builder.getInt32(0)),
++                        builder.CreateICmpNE(exponent, builder.getInt32(255))),
++      builder.CreateICmpEQ(builder.CreateAnd(bits, builder.getInt32(0x7fffffff)),
++                           builder.getInt32(0)));
++  Function *function = builder.GetInsertBlock()->getParent();
++  BasicBlock *fast = BasicBlock::Create(context, "psq_extend_plain", function);
++  BasicBlock *slow = BasicBlock::Create(context, "psq_extend_special", function);
++  BasicBlock *join = BasicBlock::Create(context, "psq_extend_join", function);
++  builder.CreateCondBr(plain, fast, slow,
++                       MDBuilder(context).createBranchWeights(2000, 1));
++
++  builder.SetInsertPoint(fast);
++  Value *plainValue = builder.CreateConstrainedFPCast(
++      Intrinsic::experimental_constrained_fpext,
++      builder.CreateBitCast(bits, builder.getFloatTy()), f64, nullptr,
++      "psq.extend", nullptr, std::nullopt, fp::ebIgnore);
++  builder.CreateBr(join);
++
++  builder.SetInsertPoint(slow);
++  Value *x = builder.CreateZExt(bits, i64);
+   Value *fraction = builder.CreateAnd(bits, builder.getInt32(0x007fffff));
+   Value *normal =
+       builder.CreateAnd(builder.CreateICmpUGT(exponent, builder.getInt32(0)),
+@@ -51,9 +78,16 @@ Value *extendPSQFloat(IRBuilder<> &builder, Module &module, Value *bits) {
+   Value *isSubnormal =
+       builder.CreateAnd(builder.CreateICmpEQ(exponent, builder.getInt32(0)),
+                         builder.CreateICmpNE(fraction, builder.getInt32(0)));
+-  return builder.CreateBitCast(
+-      builder.CreateSelect(isSubnormal, subnormal, regular),
+-      Type::getDoubleTy(module.getContext()));
++  Value *specialValue = builder.CreateBitCast(
++      builder.CreateSelect(isSubnormal, subnormal, regular), f64);
++  BasicBlock *slowEnd = builder.GetInsertBlock();
++  builder.CreateBr(join);
++
++  builder.SetInsertPoint(join);
++  PHINode *result = builder.CreatePHI(f64, 2, "psq.extended");
++  result->addIncoming(plainValue, fast);
++  result->addIncoming(specialValue, slowEnd);
++  return result;
+ }
+ 
+ Value *dequantizePSQInteger(IRBuilder<> &builder, Value *value, Value *scale,

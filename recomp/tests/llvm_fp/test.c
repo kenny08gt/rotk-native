@@ -1,7 +1,9 @@
 // Runs each LLVM-compiled guest function from ops.h on random register
 // state and replays the same steps with the C build's fast_cpu.h on a copy
 // (FPR, PS1, FPSCR and CR must match bit for bit) and with the exact library
-// helpers on another (FPR, PS1 and CR must match).
+// helpers on another (FPR, PS1 and CR must match). psq_l/psq_lu steps load random 32-bit
+// patterns from guest RAM through an unquantized (type 0) GQR and replay with
+// fast_psq_load_inline and ppc_psq_load; GPRs are compared too.
 #define FAST_NO_MEM
 #define FAST_NO_FP
 #define FAST_NO_PSQ
@@ -54,6 +56,12 @@ void func_80003200(CPUState *);
 void func_80003300(CPUState *);
 void func_80003400(CPUState *);
 void func_80003500(CPUState *);
+void func_80003600(CPUState *);
+void func_80003700(CPUState *);
+void func_80003800(CPUState *);
+void func_80003900(CPUState *);
+void func_80003A00(CPUState *);
+void func_80003B00(CPUState *);
 
 typedef void (*GuestFunction)(CPUState *);
 static const GuestFunction h1_entries[] = {
@@ -95,6 +103,12 @@ static const GuestFunction h1_entries[] = {
     func_80003300,
     func_80003400,
     func_80003500,
+    func_80003600,
+    func_80003700,
+    func_80003800,
+    func_80003900,
+    func_80003A00,
+    func_80003B00,
 };
 _Static_assert(sizeof(h1_entries) / sizeof(h1_entries[0]) == H1_FUNCTION_COUNT,
                "one entry per ops.h function");
@@ -164,6 +178,29 @@ static u64 random_value(void) {
     return next64();
 }
 
+static const u32 specials32[] = {
+    0x00000000u, 0x80000000u, 0x00000001u, 0x80000001u, 0x007FFFFFu, 0x807FFFFFu,
+    0x00400000u, 0x00000100u, 0x00800000u, 0x80800000u, 0x7F7FFFFFu, 0xFF7FFFFFu,
+    0x3F800000u, 0xBF800000u, 0x7F800000u, 0xFF800000u, 0x7FC00000u, 0xFFC00000u,
+    0x7FFFFFFFu, 0xFFFFFFFFu, 0x7F800001u, 0xFF800001u, 0x7FA00000u, 0x7FBFFFFFu,
+    0xFFBFFFFFu, 0x7F812345u,
+};
+
+static u32 random_single_bits(void) {
+    u64 pick = next64() % 100;
+    u32 bits = (u32)next64();
+    if (pick < 40)
+        return specials32[next64() % (sizeof(specials32) / sizeof(specials32[0]))];
+    if (pick < 55)
+        return bits & 0x807FFFFFu;
+    if (pick < 70)
+        return bits | 0x7F800000u;
+    return bits;
+}
+
+#define PSQ_WINDOW 0x00100000u
+#define PSQ_WINDOW_SIZE 256u
+
 static u32 random_fpscr(int fast_only) {
     u32 high = (u32)next64() & 0xFFFFFF00u;
     if (next64() % 4 == 0)
@@ -223,6 +260,19 @@ static void replay(CPUState *cpu, const H1Step *step, int library) {
     case H1_PS_ADD: fast_ps_add_op(cpu, step->d, step->a, step->b); break;
     case H1_PS_MUL: fast_ps_mul_op(cpu, step->d, step->a, step->c); break;
     case H1_PS_MADD: fast_ps_madd_op(cpu, step->d, step->a, step->c, step->b, false, false); break;
+    case H1_PSQ_L:
+    case H1_PSQ_LU: {
+        u32 ea = cpu->gpr[step->a] + step->b;
+        bool w = step->c >> 3;
+        u8 gqr = step->c & 7;
+        bool ok = library ? ppc_psq_load(cpu, step->d, ea, w, gqr, false, 0)
+                          : fast_psq_load_inline(cpu, step->d, ea, w, gqr, false, 0);
+        if (ok && step->kind == H1_PSQ_LU)
+            cpu->gpr[step->a] = ea;
+        break;
+    }
+    case H1_LI: cpu->gpr[step->d] = step->b; break;
+    case H1_MTGQR: cpu->gqr[step->c] = cpu->gpr[step->d]; break;
     default: break;
     }
     if (step->rc)
@@ -235,9 +285,16 @@ static u64 bits_of(f64 value) {
     return bits;
 }
 
+static int psq_function(const H1Function *function) {
+    for (u32 i = 0; i < H1_MAX_WORDS && function->steps[i].kind != H1_END; i++)
+        if (function->steps[i].kind == H1_PSQ_L || function->steps[i].kind == H1_PSQ_LU)
+            return 1;
+    return 0;
+}
+
 static int mixed_function(const H1Function *function) {
     for (u32 i = 0; i < H1_MAX_WORDS && function->steps[i].kind != H1_END; i++)
-        if (function->steps[i].kind >= H1_PS_ADD)
+        if (function->steps[i].kind >= H1_PS_ADD && function->steps[i].kind <= H1_PS_MADD)
             return 1;
     return 0;
 }
@@ -255,6 +312,7 @@ int main(int argc, char **argv) {
     for (u32 f = 0; f < H1_FUNCTION_COUNT; f++) {
         const H1Function *function = &h1_functions[f];
         int fast_only = mixed_function(function);
+        int psq = psq_function(function);
         u64 mismatches = 0, library_mismatches = 0, fast_mode = 0, finite_results = 0;
         int has_rc = 0;
         for (u32 i = 0; i < H1_MAX_WORDS && function->steps[i].kind != H1_END; i++)
@@ -271,6 +329,28 @@ int main(int argc, char **argv) {
             memcpy(reference.ps1, generated.ps1, sizeof(generated.ps1));
             memcpy(library.fpr, generated.fpr, sizeof(generated.fpr));
             memcpy(library.ps1, generated.ps1, sizeof(generated.ps1));
+            for (u32 reg = 0; reg < 32; reg++)
+                generated.gpr[reg] = (u32)next64();
+            for (u32 i = 0; i < 8; i++)
+                generated.gqr[i] = (u32)next64() & ~0x00070000u;
+            if (psq) {
+                for (u32 i = 0; i < H1_MAX_WORDS && function->steps[i].kind != H1_END; i++)
+                    if (function->steps[i].kind == H1_PSQ_L || function->steps[i].kind == H1_PSQ_LU)
+                        generated.gpr[function->steps[i].a] =
+                            GC_RAM_BASE + PSQ_WINDOW + (u32)(next64() % 32) * 4u;
+                for (u32 offset = 0; offset < PSQ_WINDOW_SIZE; offset += 4) {
+                    u32 word = __builtin_bswap32(random_single_bits());
+                    memcpy(generated.ram + PSQ_WINDOW + offset, &word, 4);
+                }
+                memcpy(reference.ram + PSQ_WINDOW, generated.ram + PSQ_WINDOW, PSQ_WINDOW_SIZE);
+                memcpy(library.ram + PSQ_WINDOW, generated.ram + PSQ_WINDOW, PSQ_WINDOW_SIZE);
+            }
+            memcpy(reference.gpr, generated.gpr, sizeof(generated.gpr));
+            memcpy(library.gpr, generated.gpr, sizeof(generated.gpr));
+            memcpy(reference.gqr, generated.gqr, sizeof(generated.gqr));
+            memcpy(library.gqr, generated.gqr, sizeof(generated.gqr));
+            generated.hid2 = reference.hid2 = library.hid2 = PPC_HID2_PSE | PPC_HID2_LSQE;
+            reference.exception = library.exception = 0;
             generated.fpscr = reference.fpscr = library.fpscr = fpscr;
             generated.cr = reference.cr = library.cr = cr;
             generated.pc = function->address;
@@ -291,7 +371,9 @@ int main(int argc, char **argv) {
             // The inline paired-single path records FPRF while fast_cpu.h's paired fast paths
             // skip it, so FPRF is compared only for all-scalar functions.
             u32 fpscr_mask = fast_only ? ~0x0001F000u : ~0u;
-            int bad = memcmp(generated.fpr, reference.fpr, sizeof(generated.fpr)) != 0 ||
+            int bad = memcmp(generated.gpr, reference.gpr, sizeof(generated.gpr)) != 0 ||
+                      generated.exception != 0 || reference.exception != 0 ||
+                      memcmp(generated.fpr, reference.fpr, sizeof(generated.fpr)) != 0 ||
                       memcmp(generated.ps1, reference.ps1, sizeof(generated.ps1)) != 0 ||
                       (generated.fpscr & fpscr_mask) != (reference.fpscr & fpscr_mask) ||
                       generated.cr != reference.cr;
@@ -302,6 +384,8 @@ int main(int argc, char **argv) {
             if (!fast_only) {
                 u32 cr_mask = has_rc ? ~0x0F000000u : ~0u;
                 int library_bad =
+                    memcmp(generated.gpr, library.gpr, sizeof(generated.gpr)) != 0 ||
+                    library.exception != 0 ||
                     memcmp(generated.fpr, library.fpr, sizeof(generated.fpr)) != 0 ||
                     memcmp(generated.ps1, library.ps1, sizeof(generated.ps1)) != 0 ||
                     (generated.cr & cr_mask) != (library.cr & cr_mask);
@@ -341,6 +425,11 @@ int main(int argc, char **argv) {
             }
             if (generated.fpscr != reference.fpscr)
                 printf("  fpscr: llvm %08X  c %08X\n", generated.fpscr, reference.fpscr);
+            for (u32 reg = 0; reg < 32; reg++)
+                if (generated.gpr[reg] != reference.gpr[reg])
+                    printf("  r%u: llvm %08X  c %08X\n", reg, generated.gpr[reg], reference.gpr[reg]);
+            if (generated.exception || reference.exception)
+                printf("  exception: llvm %u  c %u\n", generated.exception, reference.exception);
             if (generated.cr != reference.cr)
                 printf("  cr: llvm %08X  c %08X\n", generated.cr, reference.cr);
         }

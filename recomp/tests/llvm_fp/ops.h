@@ -1,5 +1,7 @@
 // Guest functions shared by fixture.cpp (which encodes and compiles them)
 // and test.c (which runs them and replays each step with fast_cpu.h).
+// PSQ_L/PSQ_LU steps use d=frD, a=rA, b=displacement, c=GQR index | W << 3; LI uses d=rD, b=immediate;
+// MTGQR uses d=rS, c=GQR index.
 #pragma once
 #include "cpu/cpu.h"
 
@@ -27,6 +29,10 @@ typedef enum {
   H1_PS_ADD,
   H1_PS_MUL,
   H1_PS_MADD,
+  H1_PSQ_L,
+  H1_PSQ_LU,
+  H1_LI,
+  H1_MTGQR,
 } H1Kind;
 
 typedef struct {
@@ -70,6 +76,15 @@ static inline u32 h1_encode(H1Step step) {
   case H1_PS_ADD: return 0x10000000u | fields | (21u << 1);
   case H1_PS_MUL: return 0x10000000u | fields | (25u << 1);
   case H1_PS_MADD: return 0x10000000u | fields | (29u << 1);
+  case H1_PSQ_L:
+  case H1_PSQ_LU:
+    return (step.kind == H1_PSQ_LU ? 0xE4000000u : 0xE0000000u) | ((u32)step.d << 21) |
+           ((u32)step.a << 16) | ((u32)(step.c >> 3) << 15) | ((u32)(step.c & 7) << 12) | step.b;
+  case H1_LI: return 0x38000000u | ((u32)step.d << 21) | step.b;
+  case H1_MTGQR: {
+    u32 spr = 912u + (step.c & 7);
+    return 0x7C0003A6u | ((u32)step.d << 21) | ((spr & 31u) << 16) | ((spr >> 5) << 11);
+  }
   default: return 0;
   }
 }
@@ -98,6 +113,10 @@ static inline u32 h1_encode(H1Step step) {
 #define PSADD(d, a, b) {H1_PS_ADD, d, a, b, 0, 0}
 #define PSMUL(d, a, c) {H1_PS_MUL, d, a, 0, c, 0}
 #define PSMADD(d, a, c, b) {H1_PS_MADD, d, a, b, c, 0}
+#define PSQL(d, a, disp, i, w) {H1_PSQ_L, d, a, disp, (i) | (w) << 3, 0}
+#define PSQLU(d, a, disp, i, w) {H1_PSQ_LU, d, a, disp, (i) | (w) << 3, 0}
+#define LI(d, imm) {H1_LI, d, 0, imm, 0, 0}
+#define MTGQR(i, s) {H1_MTGQR, s, 0, 0, i, 0}
 
 static const H1Function h1_functions[] = {
     {"fadds", 0x80001000u, {ADD(1, 2, 3)}},
@@ -152,6 +171,14 @@ static const H1Function h1_functions[] = {
     {"double_mixed", 0x80003500u,
      {PSADD(1, 2, 3), ADDD(4, 1, 2), CMPU(2, 4, 1), PSMUL(5, 4, 1),
       MSUBD(6, 5, 4, 1), PSMADD(7, 6, 1, 5), DIVD(8, 7, 6)}},
+    {"psq_l", 0x80003600u, {PSQL(1, 3, 0, 0, 0)}},
+    {"psq_l_w", 0x80003700u, {PSQL(2, 4, 8, 2, 1)}},
+    {"psq_lu", 0x80003800u, {PSQLU(3, 5, 16, 5, 0)}},
+    {"psq_lu_w", 0x80003900u, {PSQLU(4, 6, 4, 7, 1)}},
+    {"psq_known", 0x80003A00u,
+     {LI(7, 0), MTGQR(3, 7), PSQL(5, 8, 0, 3, 0), PSQLU(6, 8, 8, 3, 1)}},
+    {"psq_chain", 0x80003B00u,
+     {PSQL(1, 3, 0, 1, 0), PSQL(2, 3, 8, 1, 1), ADDD(3, 1, 2), PSQLU(4, 9, 12, 1, 0)}},
 };
 
 #define H1_FUNCTION_COUNT (sizeof(h1_functions) / sizeof(h1_functions[0]))
