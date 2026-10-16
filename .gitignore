@@ -18,8 +18,7 @@ docs/screens/
 recomp/out/
 recomp/out-llvm/
 recomp/obj/
-recomp/build/
-recomp/build-llvm/
+recomp/build*/
 recomp/dist/
 recomp/rotk_boot
 recomp/chassis/*.o

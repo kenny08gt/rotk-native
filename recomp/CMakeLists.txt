@@ -51,17 +51,19 @@ else()
     add_library(rotk_chunks STATIC ${ROTK_CHUNKS})
     target_include_directories(rotk_chunks PRIVATE ${ROTK_GEN})
     target_link_libraries(rotk_chunks PUBLIC dolrecomp_cpu)
-    target_compile_options(rotk_chunks PRIVATE -O3 -mcpu=apple-m1 -w -ffp-contract=off
+    target_compile_options(rotk_chunks PRIVATE -O3 -mcpu=apple-m1 -Wno-everything -ffp-contract=off
         -include ${CMAKE_CURRENT_SOURCE_DIR}/chassis/hooks.h)
     # Profile-guided optimization of the generated code: ROTK_PGO=gen builds instrumented chunks
-    # (run the game, then merge default_*.profraw with `xcrun llvm-profdata merge -o rotk.profdata`),
-    # ROTK_PGO=use builds with ROTK_PGO_PROFILE (default: pgo/rotk.profdata).
+    # (pgo.sh trains them on the fight benchmark and writes pgo/rotk.profdata),
+    # ROTK_PGO=use builds with ROTK_PGO_PROFILE (default: pgo/rotk.profdata). Use keeps the stale-profile
+    # warnings on: clang silently drops the profile of any function whose generated code changed.
     set(ROTK_PGO "" CACHE STRING "Profile-guided optimization: gen, use or empty")
     set(ROTK_PGO_PROFILE "${CMAKE_CURRENT_SOURCE_DIR}/pgo/rotk.profdata" CACHE FILEPATH "Merged profile for ROTK_PGO=use")
     if(ROTK_PGO STREQUAL "gen")
         target_compile_options(rotk_chunks PRIVATE -fprofile-instr-generate)
     elseif(ROTK_PGO STREQUAL "use")
-        target_compile_options(rotk_chunks PRIVATE -fprofile-instr-use=${ROTK_PGO_PROFILE} -Wno-profile-instr-unprofiled)
+        target_compile_options(rotk_chunks PRIVATE -fprofile-instr-use=${ROTK_PGO_PROFILE}
+            -Wprofile-instr-out-of-date -Wprofile-instr-unprofiled)
     endif()
     # Function-entry tracing (FN_TRACE=addr,... at run time); off by default, costs a call per guest function.
     option(ROTK_TRACE_HOOKS "Call rotk_fn_entry at every guest function entry" OFF)

@@ -41,10 +41,11 @@ cmake --build build -j8
 ```
 
 Options: `ROTK_FAST_CPU` (inline memory/FP fast paths, `chassis/fast_cpu.h`, default ON),
-`ROTK_PGO=gen|use` (profile-guided optimization of the generated code; to refresh the profile build with
-`gen`, play a while with `LLVM_PROFILE_FILE=pgo/rotk-%p.profraw`, then
-`xcrun llvm-profdata merge -o pgo/rotk.profdata pgo/*.profraw`), `ROTK_TRACE_HOOKS` (function-entry
-hooks for `FN_TRACE`, debugging only).
+`ROTK_PGO=gen|use` (profile-guided optimization of the generated code; `./pgo.sh` retrains
+`pgo/rotk.profdata` on the fight benchmark. Rerun it whenever the generated code changes: clang drops the
+profile of every function whose code changed, and the build warns `profile data may be out of date` or
+`no profile data available for file`), `ROTK_TRACE_HOOKS` (function-entry hooks for `FN_TRACE`,
+debugging only).
 
 `ROTK_BACKEND=llvm` (experimental) links DolRecomp's LLVM backend instead of the C chunks. That backend
 promotes guest registers to host registers within each function and calls guest functions directly.
