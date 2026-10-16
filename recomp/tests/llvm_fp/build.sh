@@ -1,8 +1,9 @@
 #!/bin/sh
 # Differential test for the LLVM backend's inline scalar FP fast paths
-# (patches/dolrecomp-llvm-inline-single-fp.patch): compiles guest functions through the real
-# backend (fixture.cpp), runs them on random register states, and replays the same instructions
-# with chassis/fast_cpu.h, comparing every FPR, PS1, FPSCR and CR bit.
+# (patches/dolrecomp-llvm-inline-{single,double}-fp.patch: single and double arithmetic, fused ops and
+# fcmp): compiles guest functions through the real backend (fixture.cpp), runs them on random
+# register states, and replays the same instructions with chassis/fast_cpu.h, comparing every
+# FPR, PS1, FPSCR and CR bit, and with the exact library helpers, comparing FPR, PS1 and CR.
 # Needs the DolRecomp LLVM build (third_party/dolrecomp/build-llvm) and LLVM 20.
 # usage: tests/llvm_fp/build.sh [iterations] [seed]
 set -eu

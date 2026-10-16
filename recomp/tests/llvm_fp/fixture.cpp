@@ -1,5 +1,5 @@
-// Builds an object with one guest function per scalar single-precision FP op
-// (plus a few chained and paired-mixed sequences) through the LLVM backend, so
+// Builds an object with one guest function per scalar FP op (single, double,
+// fused and fcmp, plus a few chained and paired-mixed sequences) through the LLVM backend, so
 // test.c can compare each against recomp/chassis/fast_cpu.h.
 #include "backend/llvm/llvm_backend.h"
 #include "cpu/cpu.h"

@@ -1,0 +1,280 @@
+diff --git a/src/backend/llvm/emitter.h b/src/backend/llvm/emitter.h
+index ce2dd23..8c0fdeb 100644
+--- a/src/backend/llvm/emitter.h
++++ b/src/backend/llvm/emitter.h
+@@ -6,6 +6,7 @@
+ #include <string>
+ #include <vector>
+ #include <llvm/ADT/ArrayRef.h>
++#include <llvm/ADT/STLFunctionalExtras.h>
+ #include <llvm/ADT/StringRef.h>
+ #include <llvm/IR/CallingConv.h>
+ #include <llvm/IR/IRBuilder.h>
+@@ -172,6 +173,12 @@ private:
+   void emitExactFloat(u64 descriptor);
+   void emitExactSingleInline(DolIRExactFloat op, u32 d, u32 a, u32 b, u32 c,
+                              u32 crfd);
++  void emitExactDoubleInline(DolIRExactFloat op, u32 d, u32 a, u32 b, u32 c,
++                             u32 crfd);
++  void emitExactCompareInline(DolIRExactFloat op, u32 a, u32 b, u32 crfd);
++  void emitFastOrExactHelper(llvm::Value *ok, llvm::function_ref<void()> fast,
++                             DolIRExactFloat op, u32 d, u32 a, u32 b, u32 c,
++                             u32 crfd);
+   void emitExactFloatHelper(DolIRExactFloat op, u32 d, u32 a, u32 b, u32 c,
+                             u32 crfd);
+   void emitExactPaired(u64 descriptor);
+diff --git a/src/backend/llvm/floating_point.cpp b/src/backend/llvm/floating_point.cpp
+index d3aad36..66270f0 100644
+--- a/src/backend/llvm/floating_point.cpp
++++ b/src/backend/llvm/floating_point.cpp
+@@ -22,12 +22,75 @@ void FunctionEmitter::emitExactFloat(u64 descriptor) {
+   bool singleResult = (op >= DOLIR_EXACT_FADDS && op <= DOLIR_EXACT_FDIVS) ||
+                       op == DOLIR_EXACT_FRSP ||
+                       (op >= DOLIR_EXACT_FMADDS && op <= DOLIR_EXACT_FNMSUBS);
++  bool doubleResult = (op >= DOLIR_EXACT_FADD && op <= DOLIR_EXACT_FDIV) ||
++                      (op >= DOLIR_EXACT_FMADD && op <= DOLIR_EXACT_FNMSUB);
+   if (singleResult)
+     emitExactSingleInline(op, d, a, b, c, crfd);
++  else if (doubleResult)
++    emitExactDoubleInline(op, d, a, b, c, crfd);
++  else if (op == DOLIR_EXACT_FCMPU || op == DOLIR_EXACT_FCMPO)
++    emitExactCompareInline(op, a, b, crfd);
+   else
+     emitExactFloatHelper(op, d, a, b, c, crfd);
+ }
+ 
++static Value *constrainedBinary(IRBuilder<> &builder, Intrinsic::ID id,
++                                Value *left, Value *right) {
++  return builder.CreateConstrainedFPBinOp(id, left, right, nullptr, "fp.math",
++                                          nullptr, RoundingMode::Dynamic,
++                                          fp::ebIgnore);
++}
++
++static Value *constrainedFMA(IRBuilder<> &builder, Module &module, Value *x,
++                             Value *y, Value *z) {
++  Function *fma = Intrinsic::getDeclaration(
++      &module, Intrinsic::experimental_constrained_fma, {x->getType()});
++  return builder.CreateConstrainedFPCall(fma, {x, y, z}, "fp.fma",
++                                         RoundingMode::Dynamic, fp::ebIgnore);
++}
++
++// Branches to the inline fast arm when `ok`, else to today's exact helper
++// call. Both arms start from, and the join resumes with, the emitter mirrors
++// as they were before the branch; callers then record what both arms leave
++// behind.
++void FunctionEmitter::emitFastOrExactHelper(Value *ok, function_ref<void()> fast,
++                                            DolIRExactFloat op, u32 d, u32 a,
++                                            u32 b, u32 c, u32 crfd) {
++  auto incomingRepresentations = fp_rep_;
++  auto incomingExactSingles = fp_exact_single_;
++  auto incomingDenormalSafety = fp_denormal_safe_;
++  auto incomingValueClasses = fp_value_class_;
++  auto incomingKnownState = known_state_;
++  bool incomingFPAvailable = fp_available_checked_;
++  auto restore = [&] {
++    fp_rep_ = incomingRepresentations;
++    fp_exact_single_ = incomingExactSingles;
++    fp_denormal_safe_ = incomingDenormalSafety;
++    fp_value_class_ = incomingValueClasses;
++    known_state_ = incomingKnownState;
++    fp_available_checked_ = incomingFPAvailable;
++  };
++  BasicBlock *fastBlock = BasicBlock::Create(context_, "fp_fast", function_);
++  BasicBlock *slow = BasicBlock::Create(context_, "fp_slow", function_);
++  BasicBlock *join = BasicBlock::Create(context_, "fp_join", function_);
++  builder_.CreateCondBr(ok, fastBlock, slow,
++                        MDBuilder(context_).createBranchWeights(2000, 1));
++
++  builder_.SetInsertPoint(slow);
++  emitExactFloatHelper(op, d, a, b, c, crfd);
++  builder_.CreateBr(join);
++
++  restore();
++  builder_.SetInsertPoint(fastBlock);
++  fast();
++  builder_.CreateBr(join);
++
++  builder_.SetInsertPoint(join);
++  restore();
++  known_state_[DOLIR_STATE_FPSCR] = nullptr;
++  pending_fprf_ = nullptr;
++}
++
+ // Mirrors the C build's fast paths in recomp/chassis/fast_cpu.h bit for bit:
+ // with FPSCR in its default mode (round-to-nearest, no enabled exceptions)
+ // the single-precision result is computed inline in double, and the exact
+@@ -44,17 +107,10 @@ void FunctionEmitter::emitExactSingleInline(DolIRExactFloat op, u32 d, u32 a,
+     return stateValue(static_cast<DolIRStateSlot>(DOLIR_STATE_FPR0 + reg));
+   };
+   auto binary = [this](Intrinsic::ID id, Value *left, Value *right) {
+-    return builder_.CreateConstrainedFPBinOp(id, left, right, nullptr,
+-                                             "fp.math", nullptr,
+-                                             RoundingMode::Dynamic,
+-                                             fp::ebIgnore);
++    return constrainedBinary(builder_, id, left, right);
+   };
+-  auto fusedMultiplyAdd = [this, f64](Value *x, Value *y, Value *z) {
+-    Function *fma = Intrinsic::getDeclaration(
+-        &module_, Intrinsic::experimental_constrained_fma, {f64});
+-    return builder_.CreateConstrainedFPCall(fma, {x, y, z}, "fp.fma",
+-                                            RoundingMode::Dynamic,
+-                                            fp::ebIgnore);
++  auto fusedMultiplyAdd = [this](Value *x, Value *y, Value *z) {
++    return constrainedFMA(builder_, module_, x, y, z);
+   };
+   auto roundToSingle = [this, f32](Value *value) {
+     return builder_.CreateConstrainedFPCast(
+@@ -200,47 +256,118 @@ void FunctionEmitter::emitExactSingleInline(DolIRExactFloat op, u32 d, u32 a,
+       ok = builder_.CreateAnd(ok, extra);
+   }
+ 
+-  auto incomingRepresentations = fp_rep_;
+-  auto incomingExactSingles = fp_exact_single_;
+-  auto incomingDenormalSafety = fp_denormal_safe_;
+-  auto incomingValueClasses = fp_value_class_;
+-  auto incomingKnownState = known_state_;
+-  bool incomingFPAvailable = fp_available_checked_;
+-  BasicBlock *fast = BasicBlock::Create(context_, "fp_single_fast", function_);
+-  BasicBlock *slow = BasicBlock::Create(context_, "fp_single_slow", function_);
+-  BasicBlock *join = BasicBlock::Create(context_, "fp_single_join", function_);
+-  builder_.CreateCondBr(ok, fast, slow,
+-                        MDBuilder(context_).createBranchWeights(2000, 1));
+-
+-  builder_.SetInsertPoint(slow);
+-  emitExactFloatHelper(op, d, a, b, c, crfd);
+-  builder_.CreateBr(join);
+-
+-  fp_rep_ = incomingRepresentations;
+-  fp_exact_single_ = incomingExactSingles;
+-  fp_denormal_safe_ = incomingDenormalSafety;
+-  fp_value_class_ = incomingValueClasses;
+-  known_state_ = incomingKnownState;
+-  fp_available_checked_ = incomingFPAvailable;
+-  builder_.SetInsertPoint(fast);
+-  writePairF32(d, builder_.CreateVectorSplat(2, single, "fp.single"), true);
+-  builder_.CreateBr(join);
+-
+-  builder_.SetInsertPoint(join);
+-  fp_rep_ = incomingRepresentations;
+-  fp_exact_single_ = incomingExactSingles;
+-  fp_denormal_safe_ = incomingDenormalSafety;
+-  fp_value_class_ = incomingValueClasses;
+-  known_state_ = incomingKnownState;
+-  fp_available_checked_ = incomingFPAvailable;
++  emitFastOrExactHelper(
++      ok,
++      [&] {
++        writePairF32(d, builder_.CreateVectorSplat(2, single, "fp.single"),
++                     true);
++      },
++      op, d, a, b, c, crfd);
+   fp_rep_[d] = FPRepresentation::PairF32;
+   fp_exact_single_[d] = true;
+   fp_denormal_safe_[d] = true;
+   fp_value_class_[d] = FPValueClass::Unknown;
+-  known_state_[DOLIR_STATE_FPSCR] = nullptr;
+   known_state_[DOLIR_STATE_FPR0 + d] = nullptr;
+   known_state_[DOLIR_STATE_PS1_0 + d] = nullptr;
+-  pending_fprf_ = nullptr;
++}
++
++// FAST_DOUBLE_OP and fast_fma (single=false) from recomp/chassis/fast_cpu.h:
++// in the default FPSCR mode the double result is computed inline and kept
++// when the library would store it unchanged (normal or zero for the binary
++// ops, finite for the fused ones). Only FPR[d] is written; PS1[d] keeps its
++// value, as in the library.
++void FunctionEmitter::emitExactDoubleInline(DolIRExactFloat op, u32 d, u32 a,
++                                            u32 b, u32 c, u32 crfd) {
++  Type *f64 = Type::getDoubleTy(context_);
++  Type *i64 = Type::getInt64Ty(context_);
++  auto fpr = [this](u32 reg) {
++    return stateValue(static_cast<DolIRStateSlot>(DOLIR_STATE_FPR0 + reg));
++  };
++  Value *fpscr = stateValue(DOLIR_STATE_FPSCR);
++  Value *ok = builder_.CreateICmpEQ(
++      builder_.CreateAnd(fpscr, builder_.getInt32(0xFBu)),
++      builder_.getInt32(0), "fpscr.fast");
++  Value *result = nullptr;
++  if (op >= DOLIR_EXACT_FMADD && op <= DOLIR_EXACT_FNMSUB) {
++    bool subtract = op == DOLIR_EXACT_FMSUB || op == DOLIR_EXACT_FNMSUB;
++    bool negative = op == DOLIR_EXACT_FNMADD || op == DOLIR_EXACT_FNMSUB;
++    Value *left = fpr(a);
++    Value *multiplier = fpr(c);
++    Value *addend = subtract ? builder_.CreateFNeg(fpr(b)) : fpr(b);
++    result = constrainedFMA(builder_, module_, left, multiplier, addend);
++    Value *exponent = builder_.CreateAnd(
++        builder_.CreateBitCast(result, i64),
++        builder_.getInt64(0x7FF0000000000000ull));
++    ok = builder_.CreateAnd(
++        ok, builder_.CreateICmpNE(exponent,
++                                  builder_.getInt64(0x7FF0000000000000ull)));
++    if (negative)
++      result = builder_.CreateFNeg(result);
++  } else {
++    Value *left = fpr(a);
++    Value *right = fpr(op == DOLIR_EXACT_FMUL ? c : b);
++    Intrinsic::ID id = op == DOLIR_EXACT_FADD
++                           ? Intrinsic::experimental_constrained_fadd
++                       : op == DOLIR_EXACT_FSUB
++                           ? Intrinsic::experimental_constrained_fsub
++                       : op == DOLIR_EXACT_FMUL
++                           ? Intrinsic::experimental_constrained_fmul
++                           : Intrinsic::experimental_constrained_fdiv;
++    result = constrainedBinary(builder_, id, left, right);
++    if (op == DOLIR_EXACT_FDIV)
++      ok = builder_.CreateAnd(
++          ok, builder_.CreateFCmpUNE(right, ConstantFP::get(f64, 0.0)));
++    // isnormal(r) || r == 0.0: exponent field in [1, 0x7FE], or +-0.
++    Value *bits = builder_.CreateBitCast(result, i64);
++    Value *exponent =
++        builder_.CreateAnd(bits, builder_.getInt64(0x7FF0000000000000ull));
++    Value *normal = builder_.CreateICmpULT(
++        builder_.CreateSub(exponent, builder_.getInt64(0x0010000000000000ull)),
++        builder_.getInt64(0x7FE0000000000000ull));
++    Value *zero = builder_.CreateICmpEQ(builder_.CreateShl(bits, 1),
++                                        builder_.getInt64(0));
++    ok = builder_.CreateAnd(ok, builder_.CreateOr(normal, zero));
++  }
++
++  DolIRStateSlot destination =
++      static_cast<DolIRStateSlot>(DOLIR_STATE_FPR0 + d);
++  emitFastOrExactHelper(
++      ok, [&] { builder_.CreateStore(result, state_[destination]); }, op, d,
++      a, b, c, crfd);
++  fp_rep_[d] = FPRepresentation::Raw;
++  fp_exact_single_[d] = false;
++  fp_denormal_safe_[d] = false;
++  fp_value_class_[d] = FPValueClass::Unknown;
++  known_state_[destination] = nullptr;
++}
++
++// fast_fcmp from recomp/chassis/fast_cpu.h: ordered operands set FPCC and the
++// CR field inline in any FPSCR mode; NaNs go to the helper for the exception
++// bits.
++void FunctionEmitter::emitExactCompareInline(DolIRExactFloat op, u32 a, u32 b,
++                                             u32 crfd) {
++  Value *left = stateValue(static_cast<DolIRStateSlot>(DOLIR_STATE_FPR0 + a));
++  Value *right = stateValue(static_cast<DolIRStateSlot>(DOLIR_STATE_FPR0 + b));
++  Value *fpscr = stateValue(DOLIR_STATE_FPSCR);
++  Value *ordered = builder_.CreateFCmpORD(left, right, "fcmp.ordered");
++  Value *compare = builder_.CreateSelect(
++      builder_.CreateFCmpOLT(left, right), builder_.getInt32(8),
++      builder_.CreateSelect(builder_.CreateFCmpOGT(left, right),
++                            builder_.getInt32(4), builder_.getInt32(2)),
++      "fcmp.field");
++  auto crSlot = static_cast<DolIRStateSlot>(DOLIR_STATE_CR0 + crfd);
++  emitFastOrExactHelper(
++      ordered,
++      [&] {
++        Value *kept =
++            builder_.CreateAnd(fpscr, builder_.getInt32(~(0xFu << 12)));
++        builder_.CreateStore(
++            builder_.CreateOr(kept, builder_.CreateShl(compare, 12)),
++            state_[DOLIR_STATE_FPSCR]);
++        builder_.CreateStore(compare, state_[crSlot]);
++      },
++      op, 0, a, b, 0, crfd);
++  known_state_[crSlot] = nullptr;
+ }
+ 
+ void FunctionEmitter::emitExactFloatHelper(DolIRExactFloat op, u32 d, u32 a,

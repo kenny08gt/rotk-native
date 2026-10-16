@@ -1,6 +1,7 @@
 // Runs each LLVM-compiled guest function from ops.h on random register
-// state and replays the same steps with the C build's fast_cpu.h on a copy.
-// FPR, PS1, FPSCR and CR must match bit for bit.
+// state and replays the same steps with the C build's fast_cpu.h on a copy
+// (FPR, PS1, FPSCR and CR must match bit for bit) and with the exact library
+// helpers on another (FPR, PS1 and CR must match).
 #define FAST_NO_MEM
 #define FAST_NO_FP
 #define FAST_NO_PSQ
@@ -34,14 +35,69 @@ void func_80001F00(CPUState *);
 void func_80002000(CPUState *);
 void func_80002100(CPUState *);
 void func_80002200(CPUState *);
+void func_80002300(CPUState *);
+void func_80002400(CPUState *);
+void func_80002500(CPUState *);
+void func_80002600(CPUState *);
+void func_80002700(CPUState *);
+void func_80002800(CPUState *);
+void func_80002900(CPUState *);
+void func_80002A00(CPUState *);
+void func_80002B00(CPUState *);
+void func_80002C00(CPUState *);
+void func_80002D00(CPUState *);
+void func_80002E00(CPUState *);
+void func_80002F00(CPUState *);
+void func_80003000(CPUState *);
+void func_80003100(CPUState *);
+void func_80003200(CPUState *);
+void func_80003300(CPUState *);
+void func_80003400(CPUState *);
+void func_80003500(CPUState *);
 
 typedef void (*GuestFunction)(CPUState *);
 static const GuestFunction h1_entries[] = {
-    func_80001000, func_80001100, func_80001200, func_80001300, func_80001400,
-    func_80001500, func_80001600, func_80001700, func_80001800, func_80001900,
-    func_80001A00, func_80001B00, func_80001C00, func_80001D00, func_80001E00,
-    func_80001F00, func_80002000, func_80002100, func_80002200,
+    func_80001000,
+    func_80001100,
+    func_80001200,
+    func_80001300,
+    func_80001400,
+    func_80001500,
+    func_80001600,
+    func_80001700,
+    func_80001800,
+    func_80001900,
+    func_80001A00,
+    func_80001B00,
+    func_80001C00,
+    func_80001D00,
+    func_80001E00,
+    func_80001F00,
+    func_80002000,
+    func_80002100,
+    func_80002200,
+    func_80002300,
+    func_80002400,
+    func_80002500,
+    func_80002600,
+    func_80002700,
+    func_80002800,
+    func_80002900,
+    func_80002A00,
+    func_80002B00,
+    func_80002C00,
+    func_80002D00,
+    func_80002E00,
+    func_80002F00,
+    func_80003000,
+    func_80003100,
+    func_80003200,
+    func_80003300,
+    func_80003400,
+    func_80003500,
 };
+_Static_assert(sizeof(h1_entries) / sizeof(h1_entries[0]) == H1_FUNCTION_COUNT,
+               "one entry per ops.h function");
 
 static u64 rng = 0x9E3779B97F4A7C15ull;
 static u64 next64(void) {
@@ -99,8 +155,12 @@ static u64 random_value(void) {
     }
     if (pick < 75)
         return make_double((int)(next64() % 61) - 160, next64(), negative);
-    if (pick < 90)
+    if (pick < 85)
         return make_double((int)(next64() % 61) - 30, next64(), negative);
+    if (pick < 92) {
+        int exponent = (next64() & 1) ? 960 + (int)(next64() % 63) : -1022 + (int)(next64() % 62);
+        return make_double(exponent, next64(), negative);
+    }
     return next64();
 }
 
@@ -116,23 +176,48 @@ static u32 random_fpscr(int fast_only) {
     return high | low;
 }
 
-static void replay(CPUState *cpu, const H1Step *step) {
+// library != 0 replays with the exact library helpers instead of fast_cpu.h's fast paths, the way
+// the generated slow arms call them.
+static void replay(CPUState *cpu, const H1Step *step, int library) {
     f64 result;
+    bool subtract = step->kind == H1_FMSUBS || step->kind == H1_FNMSUBS ||
+                    step->kind == H1_FMSUB || step->kind == H1_FNMSUB;
+    bool negative = step->kind == H1_FNMADDS || step->kind == H1_FNMSUBS ||
+                    step->kind == H1_FNMADD || step->kind == H1_FNMSUB;
     switch (step->kind) {
-    case H1_FADDS: fast_fadds(cpu, step->d, step->a, step->b); break;
-    case H1_FSUBS: fast_fsubs(cpu, step->d, step->a, step->b); break;
-    case H1_FMULS: fast_fmuls(cpu, step->d, step->a, step->c); break;
-    case H1_FDIVS: fast_fdivs(cpu, step->d, step->a, step->b); break;
-    case H1_FRSP: fast_frsp(cpu, step->d, step->b); break;
+    case H1_FADDS: library ? ppc_fadds(cpu, step->d, step->a, step->b) : fast_fadds(cpu, step->d, step->a, step->b); break;
+    case H1_FSUBS: library ? ppc_fsubs(cpu, step->d, step->a, step->b) : fast_fsubs(cpu, step->d, step->a, step->b); break;
+    case H1_FMULS: library ? ppc_fmuls(cpu, step->d, step->a, step->c) : fast_fmuls(cpu, step->d, step->a, step->c); break;
+    case H1_FDIVS: library ? ppc_fdivs(cpu, step->d, step->a, step->b) : fast_fdivs(cpu, step->d, step->a, step->b); break;
+    case H1_FRSP: library ? ppc_frsp(cpu, step->d, step->b) : fast_frsp(cpu, step->d, step->b); break;
+    case H1_FADD: library ? ppc_fadd(cpu, step->d, step->a, step->b) : fast_fadd(cpu, step->d, step->a, step->b); break;
+    case H1_FSUB: library ? ppc_fsub(cpu, step->d, step->a, step->b) : fast_fsub(cpu, step->d, step->a, step->b); break;
+    case H1_FMUL: library ? ppc_fmul(cpu, step->d, step->a, step->c) : fast_fmul(cpu, step->d, step->a, step->c); break;
+    case H1_FDIV: library ? ppc_fdiv(cpu, step->d, step->a, step->b) : fast_fdiv(cpu, step->d, step->a, step->b); break;
     case H1_FMADDS:
     case H1_FMSUBS:
     case H1_FNMADDS:
-    case H1_FNMSUBS: {
-        bool subtract = step->kind == H1_FMSUBS || step->kind == H1_FNMSUBS;
-        bool negative = step->kind == H1_FNMADDS || step->kind == H1_FNMSUBS;
-        if (fast_fma(cpu, cpu->fpr[step->a], cpu->fpr[step->c], cpu->fpr[step->b], true,
-                     subtract, negative, &result))
-            cpu->fpr[step->d] = cpu->ps1[step->d] = result;
+    case H1_FNMSUBS:
+    case H1_FMADD:
+    case H1_FMSUB:
+    case H1_FNMADD:
+    case H1_FNMSUB: {
+        bool single = step->kind <= H1_FNMSUBS;
+        f64 a = cpu->fpr[step->a], c = cpu->fpr[step->c], b = cpu->fpr[step->b];
+        bool ok = library ? ppc_fma(cpu, a, c, b, single, subtract, negative, &result)
+                          : fast_fma(cpu, a, c, b, single, subtract, negative, &result);
+        if (ok) {
+            cpu->fpr[step->d] = result;
+            if (single)
+                cpu->ps1[step->d] = result;
+        }
+        break;
+    }
+    case H1_FCMPU:
+    case H1_FCMPO: {
+        f64 a = cpu->fpr[step->a], b = cpu->fpr[step->b];
+        bool ordered = step->kind == H1_FCMPO;
+        library ? ppc_fcmp(cpu, step->d, a, b, ordered) : fast_fcmp(cpu, step->d, a, b, ordered);
         break;
     }
     case H1_PS_ADD: fast_ps_add_op(cpu, step->d, step->a, step->b); break;
@@ -161,8 +246,8 @@ int main(int argc, char **argv) {
     u32 iterations = argc > 1 ? (u32)strtoul(argv[1], NULL, 10) : 200000u;
     if (argc > 2)
         rng = strtoull(argv[2], NULL, 0);
-    static CPUState generated, reference;
-    if (!cpu_init(&generated) || !cpu_init(&reference)) {
+    static CPUState generated, reference, library;
+    if (!cpu_init(&generated) || !cpu_init(&reference) || !cpu_init(&library)) {
         fprintf(stderr, "cpu_init failed\n");
         return 2;
     }
@@ -170,7 +255,10 @@ int main(int argc, char **argv) {
     for (u32 f = 0; f < H1_FUNCTION_COUNT; f++) {
         const H1Function *function = &h1_functions[f];
         int fast_only = mixed_function(function);
-        u64 mismatches = 0, fast_mode = 0, finite_results = 0;
+        u64 mismatches = 0, library_mismatches = 0, fast_mode = 0, finite_results = 0;
+        int has_rc = 0;
+        for (u32 i = 0; i < H1_MAX_WORDS && function->steps[i].kind != H1_END; i++)
+            has_rc |= function->steps[i].rc;
         for (u32 iteration = 0; iteration < iterations; iteration++) {
             u32 fpscr = random_fpscr(fast_only);
             u32 cr = (u32)next64();
@@ -181,8 +269,10 @@ int main(int argc, char **argv) {
             }
             memcpy(reference.fpr, generated.fpr, sizeof(generated.fpr));
             memcpy(reference.ps1, generated.ps1, sizeof(generated.ps1));
-            generated.fpscr = reference.fpscr = fpscr;
-            generated.cr = reference.cr = cr;
+            memcpy(library.fpr, generated.fpr, sizeof(generated.fpr));
+            memcpy(library.ps1, generated.ps1, sizeof(generated.ps1));
+            generated.fpscr = reference.fpscr = library.fpscr = fpscr;
+            generated.cr = reference.cr = library.cr = cr;
             generated.pc = function->address;
             generated.lr = 0x81234567u;
             generated.exception = 0;
@@ -191,7 +281,9 @@ int main(int argc, char **argv) {
             generated.downcount = 0;
             h1_entries[f](&generated);
             for (u32 i = 0; i < H1_MAX_WORDS && function->steps[i].kind != H1_END; i++)
-                replay(&reference, &function->steps[i]);
+                replay(&reference, &function->steps[i], 0);
+            for (u32 i = 0; i < H1_MAX_WORDS && function->steps[i].kind != H1_END; i++)
+                replay(&library, &function->steps[i], 1);
             if ((fpscr & 0xFBu) == 0)
                 fast_mode++;
             if (isfinite(generated.fpr[function->steps[0].d]))
@@ -203,6 +295,31 @@ int main(int argc, char **argv) {
                       memcmp(generated.ps1, reference.ps1, sizeof(generated.ps1)) != 0 ||
                       (generated.fpscr & fpscr_mask) != (reference.fpscr & fpscr_mask) ||
                       generated.cr != reference.cr;
+            // The exact library must produce the same register values. It also records FPSCR
+            // status bits the fast paths skip, so FPSCR (and CR1 copied from it by Rc forms) is
+            // not compared. Paired ops replay through fast_cpu.h on both copies, whose paired
+            // fast paths do not flush tiny results, so only all-scalar functions are compared.
+            if (!fast_only) {
+                u32 cr_mask = has_rc ? ~0x0F000000u : ~0u;
+                int library_bad =
+                    memcmp(generated.fpr, library.fpr, sizeof(generated.fpr)) != 0 ||
+                    memcmp(generated.ps1, library.ps1, sizeof(generated.ps1)) != 0 ||
+                    (generated.cr & cr_mask) != (library.cr & cr_mask);
+                if (library_bad && ++library_mismatches <= 3) {
+                    printf("LIBRARY MISMATCH %s iteration %u fpscr %08X\n", function->name,
+                           iteration, fpscr);
+                    for (u32 reg = 0; reg < 32; reg++)
+                        if (bits_of(generated.fpr[reg]) != bits_of(library.fpr[reg]) ||
+                            bits_of(generated.ps1[reg]) != bits_of(library.ps1[reg]))
+                            printf("  f%u: llvm %016llX/%016llX  lib %016llX/%016llX\n", reg,
+                                   (unsigned long long)bits_of(generated.fpr[reg]),
+                                   (unsigned long long)bits_of(generated.ps1[reg]),
+                                   (unsigned long long)bits_of(library.fpr[reg]),
+                                   (unsigned long long)bits_of(library.ps1[reg]));
+                    if ((generated.cr & cr_mask) != (library.cr & cr_mask))
+                        printf("  cr: llvm %08X  lib %08X\n", generated.cr, library.cr);
+                }
+            }
             if (!bad)
                 continue;
             mismatches++;
@@ -227,10 +344,11 @@ int main(int argc, char **argv) {
             if (generated.cr != reference.cr)
                 printf("  cr: llvm %08X  c %08X\n", generated.cr, reference.cr);
         }
-        printf("%-14s %u runs, %llu fast-mode, %llu finite d, %llu mismatches\n",
+        printf("%-16s %u runs, %llu fast-mode, %llu finite d, %llu mismatches, %llu library\n",
                function->name, iterations, (unsigned long long)fast_mode,
-               (unsigned long long)finite_results, (unsigned long long)mismatches);
-        total_mismatches += mismatches;
+               (unsigned long long)finite_results, (unsigned long long)mismatches,
+               (unsigned long long)library_mismatches);
+        total_mismatches += mismatches + library_mismatches;
         total_fast_mode += fast_mode;
     }
     printf("TOTAL mismatches %llu\n", (unsigned long long)total_mismatches);
